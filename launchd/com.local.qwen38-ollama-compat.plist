@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local.qwen38-ollama-compat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>__STATE_DIR__/compat/anthropic_proxy.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>QWEN38_COMPAT_HOST</key>
+    <string>127.0.0.1</string>
+    <key>QWEN38_COMPAT_PORT</key>
+    <string>11440</string>
+    <key>QWEN38_OLLAMA_HOST</key>
+    <string>127.0.0.1</string>
+    <key>QWEN38_OLLAMA_PORT</key>
+    <string>11439</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>__STATE_DIR__/compat</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/compat.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/compat.stderr.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>

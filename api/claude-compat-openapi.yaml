@@ -1,0 +1,103 @@
+openapi: 3.2.0
+info:
+  title: Qwen3.8 Ollama Claude Code Compatibility API
+  version: 1.2.0
+  description: >-
+    A loopback-only compatibility endpoint that preserves Ollama's Anthropic
+    Messages API while merging Claude Code's late system messages into their
+    adjacent user messages and deterministically bounding each text tool
+    result. The transformation keeps prior prompt prefixes stable so Ollama can
+    reuse Qwen3.8 context checkpoints across turns.
+servers:
+  - url: http://127.0.0.1:11440
+paths:
+  /v1/messages:
+    post:
+      operationId: createMessage
+      summary: Create or stream an Anthropic-compatible message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessagesRequest'
+      responses:
+        '200':
+          description: Anthropic message response or SSE stream from Ollama
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Invalid JSON, message content, or late system message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Ollama upstream is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/version:
+    get:
+      operationId: getUpstreamVersion
+      summary: Return the upstream Ollama version
+      responses:
+        '200':
+          description: Ollama version response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version:
+                    type: string
+components:
+  schemas:
+    MessagesRequest:
+      type: object
+      required: [model, max_tokens, messages]
+      properties:
+        model:
+          type: string
+        max_tokens:
+          type: integer
+          minimum: 1
+        stream:
+          type: boolean
+        system:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [role, content]
+            additionalProperties: true
+      additionalProperties: true
+    ErrorResponse:
+      type: object
+      required: [type, error]
+      properties:
+        type:
+          const: error
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+            message:
+              type: string

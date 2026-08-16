@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local.qwen38-ollama</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__OLLAMA_BIN__</string>
+    <string>serve</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OLLAMA_HOST</key>
+    <string>127.0.0.1:11439</string>
+    <key>OLLAMA_MODELS</key>
+    <string>__STATE_DIR__/models</string>
+    <key>OLLAMA_CONTEXT_LENGTH</key>
+    <string>65536</string>
+    <key>OLLAMA_KEEP_ALIVE</key>
+    <string>-1</string>
+    <key>OLLAMA_MAX_LOADED_MODELS</key>
+    <string>1</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__STATE_DIR__</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/server.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/server.stderr.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
