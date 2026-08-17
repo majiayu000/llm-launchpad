@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlsplit
 
+from meter import TurnMeter
+
 
 LISTEN_HOST = os.environ.get("QWEN38_COMPAT_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("QWEN38_COMPAT_PORT", "11440"))
@@ -269,6 +271,13 @@ class CompatHandler(BaseHTTPRequestHandler):
             upstream = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=3600)
             upstream.request(self.command, self.path, body=body or None, headers=headers)
             response = upstream.getresponse()
+            meter = (
+                TurnMeter()
+                if self.command == "POST"
+                and urlsplit(self.path).path == "/v1/messages"
+                and response.status == 200
+                else None
+            )
 
             self.send_response(response.status, response.reason)
             has_content_length = False
@@ -288,6 +297,8 @@ class CompatHandler(BaseHTTPRequestHandler):
 
             if self.command != "HEAD":
                 while data := response.read1(64 * 1024):
+                    if meter is not None:
+                        meter.feed(data)
                     if chunked:
                         self.wfile.write(f"{len(data):X}\r\n".encode("ascii"))
                         self.wfile.write(data)
@@ -298,6 +309,8 @@ class CompatHandler(BaseHTTPRequestHandler):
                 if chunked:
                     self.wfile.write(b"0\r\n\r\n")
                     self.wfile.flush()
+                if meter is not None:
+                    meter.finish()
 
             logging.info(
                 "method=%s path=%s status=%d merged_system_messages=%d "

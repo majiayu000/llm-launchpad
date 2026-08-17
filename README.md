@@ -93,9 +93,12 @@ Ollama 独立实例 127.0.0.1:11439    兼容层 127.0.0.1:11440
 ```bash
 ./scripts/start.sh     # 启动（安装后开机自启，一般无需手动）
 ./scripts/status.sh    # 状态（JSON：运行/已装/已加载/内存占用）
+./scripts/meter.sh     # 实时速度计（Claude Code 流量的 tok/s 仪表盘，Ctrl-C 退出）
 ./scripts/stop.sh      # 停止服务，保留模型
 ./uninstall.sh         # 卸载服务；模型数据默认保留，确认后才删
 ```
+
+速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
 
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
 

@@ -26,6 +26,7 @@ fi
 
 mkdir -p "$STATE_DIR/models" "$STATE_DIR/compat" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 cp "$PROJECT_ROOT/compat/anthropic_proxy.py" "$STATE_DIR/compat/anthropic_proxy.py"
+cp "$PROJECT_ROOT/compat/meter.py" "$STATE_DIR/compat/meter.py"
 
 reload_agent() {
   local label="$1"
