@@ -15,5 +15,6 @@ fi
 
 "$SCRIPT_DIR/start.sh"
 
-echo "开始下载 qwen3.8:27b；首次约 17GB，支持断点续传。"
-OLLAMA_HOST=127.0.0.1:11439 "$OLLAMA_BIN" pull qwen3.8:27b
+MODEL="${QWEN38_MODEL:-qwen3.8:27b-mlx}"
+echo "开始下载 $MODEL；首次约 18GB，支持断点续传。"
+OLLAMA_HOST=127.0.0.1:11439 "$OLLAMA_BIN" pull "$MODEL"

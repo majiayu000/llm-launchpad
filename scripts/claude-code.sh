@@ -26,8 +26,10 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-65536}"
 
 LOCAL_SYSTEM_PROMPT="You are a local coding agent. The current working directory is: $PWD. Use absolute paths under this directory when calling file tools. For large files, first use rg or Read with offset/limit and inspect only relevant ranges; do not re-read saved full tool outputs. Use the provided tools when needed and follow the user's request exactly."
 
+MODEL="${QWEN38_MODEL:-qwen3.8:27b-mlx}"
+
 exec claude \
-  --model qwen3.8:27b \
+  --model "$MODEL" \
   --tools "Bash,Edit,Read,Write" \
   --system-prompt "$LOCAL_SYSTEM_PROMPT" \
   "$@"

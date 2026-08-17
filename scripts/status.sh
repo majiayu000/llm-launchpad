@@ -30,13 +30,15 @@ QWEN38_COMPAT_RUNNING="$COMPAT_RUNNING" \
 QWEN38_PID="${PID:-0}" \
 QWEN38_COMPAT_PID="${COMPAT_PID:-0}" \
 QWEN38_RSS_KIB="${RSS_KIB:-0}" \
+QWEN38_MODEL="${QWEN38_MODEL:-qwen3.8:27b-mlx}" \
 python3 <<'PY'
 import json
 import os
 
 version = json.loads(os.environ["QWEN38_VERSION_JSON"])["version"]
-installed = any(m.get("name") == "qwen3.8:27b" for m in json.loads(os.environ["QWEN38_TAGS_JSON"])["models"])
-loaded = any(m.get("name") == "qwen3.8:27b" for m in json.loads(os.environ["QWEN38_PS_JSON"])["models"])
+model = os.environ["QWEN38_MODEL"]
+installed = any(m.get("name") == model for m in json.loads(os.environ["QWEN38_TAGS_JSON"])["models"])
+loaded = any(m.get("name") == model for m in json.loads(os.environ["QWEN38_PS_JSON"])["models"])
 print(json.dumps({
     "running": True,
     "backend": "ollama",
@@ -44,7 +46,7 @@ print(json.dumps({
     "api": "http://127.0.0.1:11439",
     "claude_api": "http://127.0.0.1:11440",
     "claude_compat_running": os.environ["QWEN38_COMPAT_RUNNING"] == "true",
-    "model": "qwen3.8:27b",
+    "model": model,
     "installed": installed,
     "loaded": loaded,
     "pid": int(os.environ["QWEN38_PID"]),

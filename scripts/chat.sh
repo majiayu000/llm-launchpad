@@ -6,12 +6,14 @@ if (( $# == 0 )); then
   exit 2
 fi
 
-PAYLOAD=$(python3 - "$*" <<'PY'
+MODEL="${QWEN38_MODEL:-qwen3.8:27b-mlx}"
+
+PAYLOAD=$(python3 - "$*" "$MODEL" <<'PY'
 import json
 import sys
 
 print(json.dumps({
-    "model": "qwen3.8:27b",
+    "model": sys.argv[2],
     "messages": [{"role": "user", "content": sys.argv[1]}],
     "stream": False,
     "max_tokens": 2048,

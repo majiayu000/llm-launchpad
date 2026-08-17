@@ -11,7 +11,7 @@
 | 磁盘空闲 | 40GB（模型约 17GB + 运行余量） |
 | 软件 | macOS + Homebrew（ollama 未安装时会自动 `brew install`） |
 
-27B Q4 量化模型加载后约占 20GB 内存。参考速度：M2 Max 96GB 上生成约 8 token/s——这是 27B 的硬件推理极限，不是软件问题。
+默认使用 MLX 引擎的 4bit 量化版（`qwen3.8:27b-mlx`，约 18GB），加载后约占 20GB 内存。参考速度：M2 Max 96GB 上生成约 16 token/s；改用 GGUF 版（`QWEN38_MODEL=qwen3.8:27b`）约 8 token/s，但新开对话的首次响应更快。
 
 ## 一键安装
 
@@ -50,7 +50,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:11439/v1", api_key="local")
 response = client.chat.completions.create(
-    model="qwen3.8:27b",
+    model="qwen3.8:27b-mlx",
     messages=[{"role": "user", "content": "你好"}],
 )
 print(response.choices[0].message.content)
@@ -64,7 +64,7 @@ curl http://127.0.0.1:11440/v1/messages \
   -H 'x-api-key: ollama' \
   -H 'anthropic-version: 2023-06-01' \
   -d '{
-    "model": "qwen3.8:27b",
+    "model": "qwen3.8:27b-mlx",
     "max_tokens": 64,
     "messages": [{"role": "user", "content": "只回答 OK"}]
   }'
@@ -78,7 +78,7 @@ curl http://127.0.0.1:11440/v1/messages \
         ▼                           ▼
 Ollama 独立实例 127.0.0.1:11439    兼容层 127.0.0.1:11440
         │                           │ 转换请求格式
-        └─────────► qwen3.8:27b ◄───┘
+        └─────────► qwen3.8:27b-mlx ◄───┘
 ```
 
 - 与机器上已有的 Ollama 完全隔离：独立端口、独立模型目录（`~/.local/share/qwen38-ollama`）、独立 launchd 服务（`com.local.qwen38-ollama`）
@@ -101,8 +101,8 @@ Ollama 独立实例 127.0.0.1:11439    兼容层 127.0.0.1:11440
 
 ## 常见问题
 
-- **第一次请求等很久？** 模型正在从磁盘载入内存（约 17GB），之后常驻不重复加载。
-- **速度只有个位数 token/s？** 27B Q4 在 Apple Silicon 上的正常水平。想快就换更小的模型。
+- **新开对话的第一轮要等 2~3 分钟？** 默认的 MLX 引擎生成快（约 16 token/s）但预填充较慢，Claude Code 首轮约 1.8 万 token 的系统提示需要时间处理；同一对话从第二轮起命中前缀缓存，会明显变快。更看重首轮响应速度可换回 GGUF 版（约 8 token/s）：`QWEN38_MODEL=qwen3.8:27b ./scripts/pull.sh` 下载后，各脚本同样加 `QWEN38_MODEL=qwen3.8:27b` 运行即可。
+- **生成速度只有 8~16 token/s？** 27B 量化模型在 Apple Silicon 上的正常水平（受内存带宽限制），不是软件问题。想更快就换更小的模型。
 - **Claude Code 第二轮开始明显变快？** 前缀缓存命中了；这是兼容层缩略规则设计的直接目的。
 - **局域网其他设备能访问吗？** 不能，只监听回环地址，这是有意的隐私边界。
 

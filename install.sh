@@ -10,11 +10,11 @@ SCRIPT_DIR="${0:A:h}"
 STATE_DIR="$HOME/.local/share/qwen38-ollama"
 LOG_DIR="$HOME/Library/Logs/Qwen3.8-Ollama"
 API="http://127.0.0.1:11439"
-MODEL="qwen3.8:27b"
+MODEL="${QWEN38_MODEL:-qwen3.8:27b-mlx}"
 
-MODEL_MIN_DISK_GB=40   # 模型约 17GB + 运行余量
+MODEL_MIN_DISK_GB=40   # 模型约 18GB + 运行余量
 RUNTIME_MIN_DISK_GB=5  # 模型已装时只需少量余量
-MIN_MEM_GB=16          # 低于此值直接拒绝（27B Q4 约需 20GB 空闲内存）
+MIN_MEM_GB=16          # 低于此值直接拒绝（27B 量化模型加载后约 20GB 空闲内存）
 OK_MEM_GB=24           # 达到此值免确认
 SMOKE_TIMEOUT_S=900    # 首次请求要把 17GB 模型载入内存，给足时间
 
@@ -63,8 +63,9 @@ fi
 
 MODEL_INSTALLED=0
 if [[ "$SIM_FRESH" != 1 ]]; then
+  MODEL_MANIFEST="$STATE_DIR/models/manifests/registry.ollama.ai/library/${MODEL%%:*}/${MODEL##*:}"
   if curl -fsS --max-time 3 "$API/api/tags" 2>/dev/null | grep -q "\"$MODEL\"" \
-     || [[ -n "$(ls -A "$STATE_DIR/models/manifests" 2>/dev/null)" ]]; then
+     || [[ -f "$MODEL_MANIFEST" ]]; then
     MODEL_INSTALLED=1
   fi
 fi
@@ -135,7 +136,7 @@ fi
 say "冒烟测试：发送一条真实请求（首次需把模型载入内存，可能等待数分钟）"
 SMOKE_RESULT=$(curl -fsS --max-time "$SMOKE_TIMEOUT_S" "$API/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  --data '{"model":"qwen3.8:27b","messages":[{"role":"user","content":"只回答 OK"}],"stream":false,"max_tokens":512}')
+  --data "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"只回答 OK\"}],\"stream\":false,\"max_tokens\":512}")
 REPLY=$(python3 - "$SMOKE_RESULT" <<'PY'
 import json
 import sys
@@ -158,7 +159,7 @@ cat <<EOF
 三种使用方式：
   1. 命令行对话     ./scripts/chat.sh '你好'
   2. Claude Code    ./scripts/claude-code.sh
-  3. OpenAI SDK     base_url="$API/v1"，model="qwen3.8:27b"，api_key 任意非空
+  3. OpenAI SDK     base_url="$API/v1"，model="$MODEL"，api_key 任意非空
 
 管理：
   ./scripts/status.sh    查看状态
