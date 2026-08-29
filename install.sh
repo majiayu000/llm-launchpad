@@ -156,10 +156,11 @@ cat <<EOF
   OpenAI 兼容 API    $API/v1
   Anthropic 兼容 API  http://127.0.0.1:11440（供 Claude Code 使用）
 
-三种使用方式：
+四种使用方式：
   1. 命令行对话     ./scripts/chat.sh '你好'
   2. Claude Code    ./scripts/claude-code.sh
-  3. OpenAI SDK     base_url="$API/v1"，model="$MODEL"，api_key 任意非空
+  3. Codex CLI      ./scripts/codex.sh
+  4. OpenAI SDK     base_url="$API/v1"，model="$MODEL"，api_key 任意非空
 
 管理：
   ./scripts/status.sh    查看状态
