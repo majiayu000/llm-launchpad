@@ -1,6 +1,6 @@
 # Qwen3.8-27B · 本地一键部署（Ollama）
 
-在你的 Apple Silicon Mac 上一条命令跑起 Qwen3.8-27B，提供 OpenAI 兼容 API，并可直接作为 Claude Code 的后端模型。全程只监听 `127.0.0.1`，数据不出本机。
+在你的 Apple Silicon Mac 上一条命令跑起 Qwen3.8-27B，提供 OpenAI 兼容 API，并可直接作为 Claude Code 或 Codex CLI 的后端模型。全程只监听 `127.0.0.1`，数据不出本机。
 
 ## 硬件要求
 
@@ -29,7 +29,7 @@ cd llm-launchpad
 ./install.sh --check
 ```
 
-## 三种使用方式
+## 四种使用方式
 
 **1. 命令行对话**（thinking 默认开启，`reasoning_effort=medium`）
 
@@ -43,7 +43,23 @@ cd llm-launchpad
 ./scripts/claude-code.sh
 ```
 
-**3. OpenAI SDK / 任意兼容客户端**
+**3. Codex CLI 直接用本地模型**
+
+```bash
+./scripts/codex.sh
+```
+
+入口使用独立的 `~/.local/share/qwen38-ollama/codex`，不会改动现有
+`~/.codex`。默认保留命令确认和工作区沙箱。
+
+已安装其他 Ollama 模型时可显式选择，包括用户自行评估的 uncensored
+模型；这只改变模型，不会关闭 Codex 的命令审批或沙箱：
+
+```bash
+QWEN38_MODEL=example/uncensored:27b ./scripts/codex.sh
+```
+
+**4. OpenAI SDK / 任意兼容客户端**
 
 ```python
 from openai import OpenAI
@@ -73,12 +89,12 @@ curl http://127.0.0.1:11440/v1/messages \
 ## 架构
 
 ```
-你的程序 / OpenAI SDK          Claude Code
-        │ OpenAI API                │ Anthropic Messages API
-        ▼                           ▼
-Ollama 独立实例 127.0.0.1:11439    兼容层 127.0.0.1:11440
-        │                           │ 转换请求格式
-        └─────────► qwen3.8:27b-mlx ◄───┘
+你的程序 / OpenAI SDK / Codex CLI      Claude Code
+            │ OpenAI Responses API          │ Anthropic Messages API
+            ▼                               ▼
+Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
+            │                               │ 转换请求格式
+            └────────────► qwen3.8:27b-mlx ◄─┘
 ```
 
 - 与机器上已有的 Ollama 完全隔离：独立端口、独立模型目录（`~/.local/share/qwen38-ollama`）、独立 launchd 服务（`com.local.qwen38-ollama`）
@@ -87,6 +103,7 @@ Ollama 独立实例 127.0.0.1:11439    兼容层 127.0.0.1:11440
   1. Claude Code 会在对话中途插入 system 消息，Ollama 直接拒绝；兼容层把它们并入相邻 user 消息，顶层 system 前缀保持不变，**已完成轮次的字节不变**，从而不破坏 Ollama 的前缀缓存
   2. 超长 `Read`/`Bash` 输出按确定性规则缩略到最多 2000 字符，同一段历史每轮截得完全一样，同样为了缓存命中；模型需要更多源码时会按 offset/limit 定向重读
 - Claude Code 入口使用独立配置目录（`~/.local/share/qwen38-ollama/claude`），不影响 `~/.claude` 里的其他配置。为避免 27B 每轮冷处理 Claude Code 默认 25 个工具的超长提示，默认精简系统提示、只开放 `Bash/Edit/Read/Write` 四个工具、单次 `Read` 输出限 2500 token
+- Codex 入口通过 Ollama 的 Responses API 直连 `11439`，使用独立 `CODEX_HOME`，不经过 Claude 兼容层
 
 ## 管理
 
