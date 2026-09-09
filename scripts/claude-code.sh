@@ -13,7 +13,8 @@ mkdir -p "$CLAUDE_STATE_DIR"
 # 使用独立配置目录，避免全局智谱/Anthropic配置覆盖本地 Ollama。
 export CLAUDE_CONFIG_DIR="$CLAUDE_STATE_DIR"
 export ANTHROPIC_BASE_URL="http://127.0.0.1:11440"
-export ANTHROPIC_AUTH_TOKEN="ollama"
+# Must match the compat proxy shared secret (QWEN38_COMPAT_TOKEN, default ollama).
+export ANTHROPIC_AUTH_TOKEN="${QWEN38_COMPAT_TOKEN:-ollama}"
 export ANTHROPIC_API_KEY=""
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 export CLAUDE_CODE_MAX_RETRIES="${CLAUDE_CODE_MAX_RETRIES:-1}"

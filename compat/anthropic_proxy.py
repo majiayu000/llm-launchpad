@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import logging
 import os
+import secrets
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from meter import TurnMeter
@@ -18,6 +21,9 @@ LISTEN_HOST = os.environ.get("QWEN38_COMPAT_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("QWEN38_COMPAT_PORT", "11440"))
 UPSTREAM_HOST = os.environ.get("QWEN38_OLLAMA_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("QWEN38_OLLAMA_PORT", "11439"))
+# Shared secret for Anthropic-style clients (x-api-key / Authorization: Bearer).
+# Default matches scripts/claude-code.sh so local tooling works out of the box.
+COMPAT_TOKEN = os.environ.get("QWEN38_COMPAT_TOKEN", "ollama")
 MAX_BODY_BYTES = 64 * 1024 * 1024
 TOOL_RESULT_BLOCK_CHARS = int(os.environ.get("QWEN38_TOOL_RESULT_BLOCK_CHARS", "2000"))
 HOP_BY_HOP = {
@@ -30,6 +36,57 @@ HOP_BY_HOP = {
     "transfer-encoding",
     "upgrade",
 }
+CLIENT_AUTH_HEADERS = {"authorization", "x-api-key"}
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True when the listen address is loopback-only."""
+    normalized = host.strip().lower()
+    if normalized in {"localhost", "::1"}:
+        return True
+    # Strip IPv6 brackets used in some bind strings.
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def extract_request_credential(headers: Mapping[str, str]) -> str | None:
+    """Pull the shared secret from Anthropic-style auth headers."""
+    by_name = {name.lower(): value for name, value in headers.items()}
+    api_key = by_name.get("x-api-key")
+    if isinstance(api_key, str) and api_key.strip():
+        return api_key.strip()
+
+    authorization = by_name.get("authorization")
+    if isinstance(authorization, str):
+        scheme, _, remainder = authorization.strip().partition(" ")
+        if scheme.lower() == "bearer" and remainder.strip():
+            return remainder.strip()
+    return None
+
+
+def credential_matches(provided: str | None, expected: str) -> bool:
+    """Constant-time compare when auth is configured; empty expected disables auth."""
+    if not expected:
+        return True
+    if not isinstance(provided, str) or not provided:
+        return False
+    return secrets.compare_digest(provided, expected)
+
+
+def assert_listen_host_allowed(host: str, token: str) -> None:
+    """Refuse non-loopback binds unless a non-empty shared secret is configured."""
+    if is_loopback_host(host):
+        return
+    if token:
+        return
+    raise SystemExit(
+        f"Refusing to bind QWEN38_COMPAT_HOST={host!r} without QWEN38_COMPAT_TOKEN. "
+        "Set a non-empty shared secret before exposing the compat proxy off loopback."
+    )
 
 TOOL_RESULT_OMISSION = (
     "\n\n[Local Ollama context guard: {omitted} characters omitted. "
@@ -245,6 +302,15 @@ class CompatHandler(BaseHTTPRequestHandler):
     def _proxy(self) -> None:
         self.close_connection = True
         try:
+            credential = extract_request_credential(self.headers)
+            if not credential_matches(credential, COMPAT_TOKEN):
+                self._send_anthropic_error(
+                    401,
+                    "authentication_error",
+                    "Invalid or missing API key. Provide a matching x-api-key or Authorization: Bearer token.",
+                )
+                return
+
             body = self._read_body()
             rewritten = 0
             shortened = 0
@@ -263,7 +329,7 @@ class CompatHandler(BaseHTTPRequestHandler):
             headers = {
                 name: value
                 for name, value in self.headers.items()
-                if name.lower() not in HOP_BY_HOP | {"host", "content-length"}
+                if name.lower() not in HOP_BY_HOP | CLIENT_AUTH_HEADERS | {"host", "content-length"}
             }
             if body:
                 headers["Content-Length"] = str(len(body))
@@ -335,16 +401,27 @@ class CompatHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        assert_listen_host_allowed(LISTEN_HOST, COMPAT_TOKEN)
+    except SystemExit as error:
+        logging.error("%s", error)
+        raise SystemExit(1) from error
+
     server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), CompatHandler)
+    auth_mode = "shared-secret" if COMPAT_TOKEN else "disabled"
     logging.info(
-        "Claude compatibility API listening on http://%s:%d -> http://%s:%d",
+        "Claude compatibility API listening on http://%s:%d -> http://%s:%d (auth=%s)",
         LISTEN_HOST,
         LISTEN_PORT,
         UPSTREAM_HOST,
         UPSTREAM_PORT,
+        auth_mode,
     )
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

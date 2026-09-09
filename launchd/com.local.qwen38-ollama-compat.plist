@@ -15,6 +15,8 @@
     <string>127.0.0.1</string>
     <key>QWEN38_COMPAT_PORT</key>
     <string>11440</string>
+    <key>QWEN38_COMPAT_TOKEN</key>
+    <string>ollama</string>
     <key>QWEN38_OLLAMA_HOST</key>
     <string>127.0.0.1</string>
     <key>QWEN38_OLLAMA_PORT</key>
