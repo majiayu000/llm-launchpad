@@ -134,9 +134,21 @@ fi
 
 # ---------- 5. 冒烟测试 ----------
 say "冒烟测试：发送一条真实请求（首次需把模型载入内存，可能等待数分钟）"
+SMOKE_PAYLOAD=$(python3 - "$MODEL" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "model": sys.argv[1],
+    "messages": [{"role": "user", "content": "只回答 OK"}],
+    "stream": False,
+    "max_tokens": 512,
+}, ensure_ascii=False))
+PY
+)
 SMOKE_RESULT=$(curl -fsS --max-time "$SMOKE_TIMEOUT_S" "$API/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  --data "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"只回答 OK\"}],\"stream\":false,\"max_tokens\":512}")
+  --data "$SMOKE_PAYLOAD")
 REPLY=$(python3 - "$SMOKE_RESULT" <<'PY'
 import json
 import sys
