@@ -115,7 +115,7 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 ./uninstall.sh         # 卸载服务；模型数据默认保留，确认后才删
 ```
 
-速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
+速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `~/.local/share/qwen38-ollama/meter.json`，权限 `0600`；设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
 
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
 

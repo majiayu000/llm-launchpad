@@ -18,14 +18,16 @@ import tempfile
 import time
 from typing import Any, Callable
 
-DEFAULT_METER_FILE = "/tmp/qwen38-ollama-meter.json"
+# User-private state dir (matches install.sh / scripts STATE_DIR), not /tmp.
+DEFAULT_METER_FILE = os.path.join("~", ".local", "share", "qwen38-ollama", "meter.json")
 
 logger = logging.getLogger(__name__)
 
 
 def meter_path() -> str:
     """Resolve the snapshot path; empty value disables metering."""
-    return os.environ.get("QWEN38_METER_FILE", DEFAULT_METER_FILE).strip()
+    raw = os.environ.get("QWEN38_METER_FILE", DEFAULT_METER_FILE).strip()
+    return os.path.expanduser(raw) if raw else ""
 
 
 class TurnMeter:
@@ -121,10 +123,12 @@ class TurnMeter:
         directory = os.path.dirname(self.path) or "."
         tmp_path = ""
         try:
+            os.makedirs(directory, mode=0o700, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(prefix=".meter-", dir=directory)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(snapshot, handle, ensure_ascii=False)
             os.replace(tmp_path, self.path)
+            os.chmod(self.path, 0o600)
         except OSError as error:
             if tmp_path:
                 try:

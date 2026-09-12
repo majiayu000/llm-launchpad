@@ -3,7 +3,12 @@
 # 用法：./scripts/meter.sh    （另一个窗口跑 ./scripts/claude-code.sh）
 set -euo pipefail
 
-METER_FILE="${QWEN38_METER_FILE:-/tmp/qwen38-ollama-meter.json}"
+# Use default only when unset; empty QWEN38_METER_FILE disables (matches meter.py).
+METER_FILE="${QWEN38_METER_FILE-$HOME/.local/share/qwen38-ollama/meter.json}"
+if [[ -z "$METER_FILE" ]]; then
+  echo "速度计已关闭（QWEN38_METER_FILE 为空）" >&2
+  exit 0
+fi
 
 if [[ ! -f "$METER_FILE" ]]; then
   echo "暂无数据（状态文件 $METER_FILE 还没生成，先在别的窗口跑一次 ./scripts/claude-code.sh）" >&2

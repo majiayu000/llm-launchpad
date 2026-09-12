@@ -2,8 +2,9 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-from meter import TurnMeter
+from meter import DEFAULT_METER_FILE, TurnMeter, meter_path
 
 
 class FakeClock:
@@ -101,6 +102,27 @@ class TurnMeterTests(unittest.TestCase):
         snapshot = read_snapshot(self.path)
         self.assertEqual(snapshot["phase"], "done")
         self.assertNotIn("last_completed", snapshot)
+
+    def test_default_meter_path_is_user_private(self):
+        self.assertNotIn("/tmp/", DEFAULT_METER_FILE)
+        self.assertIn("qwen38-ollama", DEFAULT_METER_FILE)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QWEN38_METER_FILE", None)
+            path = meter_path()
+        self.assertTrue(os.path.isabs(path))
+        self.assertIn(os.path.join(".local", "share", "qwen38-ollama"), path)
+        self.assertTrue(path.endswith("meter.json"))
+
+    def test_empty_env_disables_meter_path(self):
+        with mock.patch.dict(os.environ, {"QWEN38_METER_FILE": ""}):
+            self.assertEqual(meter_path(), "")
+
+    def test_write_creates_parent_and_sets_mode_0600(self):
+        nested = os.path.join(self.tmp.name, "nested", "dir", "meter.json")
+        meter = TurnMeter(path=nested, clock=self.clock)
+        meter.feed(sse({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}))
+        self.assertTrue(os.path.isfile(nested))
+        self.assertEqual(oct(os.stat(nested).st_mode & 0o777), "0o600")
 
 
 if __name__ == "__main__":
