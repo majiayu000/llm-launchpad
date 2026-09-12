@@ -72,7 +72,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`（`x-api-key` 任意非空）：
+Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 会读取同一环境变量。
 
 ```bash
 curl http://127.0.0.1:11440/v1/messages \
@@ -124,7 +124,7 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 - **新开对话的第一轮要等 2~3 分钟？** 默认的 MLX 引擎生成快（约 16 token/s）但预填充较慢，Claude Code 首轮约 1.8 万 token 的系统提示需要时间处理；同一对话从第二轮起命中前缀缓存，会明显变快。更看重首轮响应速度可换回 GGUF 版（约 8 token/s）：`QWEN38_MODEL=qwen3.8:27b ./scripts/pull.sh` 下载后，各脚本同样加 `QWEN38_MODEL=qwen3.8:27b` 运行即可。
 - **生成速度只有 8~16 token/s？** 27B 量化模型在 Apple Silicon 上的正常水平（受内存带宽限制），不是软件问题。想更快就换更小的模型。
 - **Claude Code 第二轮开始明显变快？** 前缀缓存命中了；这是兼容层缩略规则设计的直接目的。
-- **局域网其他设备能访问吗？** 不能，只监听回环地址，这是有意的隐私边界。
+- **局域网其他设备能访问吗？** 默认不能：只监听回环地址。若把 `QWEN38_COMPAT_HOST` 改成非回环地址，必须配置非空的 `QWEN38_COMPAT_TOKEN`，否则兼容层会拒绝启动；即便能启动，未带匹配密钥的请求也会 401。
 
 ## 已知限制
 

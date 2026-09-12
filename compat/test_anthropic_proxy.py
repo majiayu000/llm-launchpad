@@ -1,6 +1,15 @@
 import unittest
+from unittest.mock import patch
 
-from anthropic_proxy import compact_anthropic_tool_results, normalize_anthropic_request
+from anthropic_proxy import (
+    CompatHandler,
+    assert_listen_host_allowed,
+    compact_anthropic_tool_results,
+    credential_matches,
+    extract_request_credential,
+    is_loopback_host,
+    normalize_anthropic_request,
+)
 
 
 class NormalizeAnthropicRequestTests(unittest.TestCase):
@@ -126,6 +135,101 @@ class CompactAnthropicToolResultsTests(unittest.TestCase):
         self.assertGreater(removed, 0)
         self.assertEqual(result["content"][0], image)
         self.assertIn("Local Ollama context guard", result["content"][1]["text"])
+
+
+class CompatAuthTests(unittest.TestCase):
+    def test_extracts_x_api_key(self):
+        self.assertEqual(
+            extract_request_credential({"X-Api-Key": "ollama", "Content-Type": "application/json"}),
+            "ollama",
+        )
+
+    def test_extracts_authorization_bearer(self):
+        self.assertEqual(
+            extract_request_credential({"Authorization": "Bearer secret-token"}),
+            "secret-token",
+        )
+
+    def test_prefers_x_api_key_over_bearer(self):
+        self.assertEqual(
+            extract_request_credential(
+                {"x-api-key": "from-header", "Authorization": "Bearer from-bearer"}
+            ),
+            "from-header",
+        )
+
+    def test_missing_credential_is_none(self):
+        self.assertIsNone(extract_request_credential({"Content-Type": "application/json"}))
+        self.assertIsNone(extract_request_credential({"Authorization": "Basic abc"}))
+
+    def test_credential_matches_expected_token(self):
+        self.assertTrue(credential_matches("ollama", "ollama"))
+        self.assertFalse(credential_matches("wrong", "ollama"))
+        self.assertFalse(credential_matches(None, "ollama"))
+        self.assertFalse(credential_matches("", "ollama"))
+
+    def test_empty_expected_token_disables_auth(self):
+        self.assertTrue(credential_matches(None, ""))
+        self.assertTrue(credential_matches("anything", ""))
+
+    def test_loopback_hosts(self):
+        self.assertTrue(is_loopback_host("127.0.0.1"))
+        self.assertTrue(is_loopback_host("localhost"))
+        self.assertTrue(is_loopback_host("::1"))
+        self.assertTrue(is_loopback_host("[::1]"))
+        self.assertFalse(is_loopback_host("0.0.0.0"))
+        self.assertFalse(is_loopback_host("192.168.1.10"))
+
+    def test_non_loopback_bind_requires_token(self):
+        assert_listen_host_allowed("127.0.0.1", "")
+        assert_listen_host_allowed("0.0.0.0", "ollama")
+        with self.assertRaises(SystemExit) as raised:
+            assert_listen_host_allowed("0.0.0.0", "")
+        self.assertIn("QWEN38_COMPAT_TOKEN", str(raised.exception))
+
+    def test_proxy_returns_401_without_calling_upstream(self):
+        handler = CompatHandler.__new__(CompatHandler)
+        handler.command = "GET"
+        handler.path = "/v1/models"
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 1)
+        handler.close_connection = False
+        sent: dict[str, object] = {}
+
+        def capture(status: int, error_type: str, message: str) -> None:
+            sent["status"] = status
+            sent["error_type"] = error_type
+            sent["message"] = message
+
+        handler._send_anthropic_error = capture  # type: ignore[method-assign]
+        with (
+            patch("anthropic_proxy.COMPAT_TOKEN", "ollama"),
+            patch("anthropic_proxy.http.client.HTTPConnection") as upstream,
+        ):
+            handler._proxy()
+
+        self.assertEqual(sent["status"], 401)
+        self.assertEqual(sent["error_type"], "authentication_error")
+        upstream.assert_not_called()
+
+    def test_proxy_returns_401_on_wrong_token(self):
+        handler = CompatHandler.__new__(CompatHandler)
+        handler.command = "GET"
+        handler.path = "/"
+        handler.headers = {"x-api-key": "wrong"}
+        handler.client_address = ("127.0.0.1", 1)
+        handler.close_connection = False
+        sent: dict[str, object] = {}
+        handler._send_anthropic_error = (  # type: ignore[method-assign]
+            lambda status, error_type, message: sent.update(status=status)
+        )
+        with (
+            patch("anthropic_proxy.COMPAT_TOKEN", "ollama"),
+            patch("anthropic_proxy.http.client.HTTPConnection") as upstream,
+        ):
+            handler._proxy()
+        self.assertEqual(sent["status"], 401)
+        upstream.assert_not_called()
 
 
 if __name__ == "__main__":
