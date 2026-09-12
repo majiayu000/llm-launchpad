@@ -1,13 +1,16 @@
 openapi: 3.2.0
 info:
   title: Qwen3.8 Ollama Claude Code Compatibility API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     A loopback-only compatibility endpoint that preserves Ollama's Anthropic
     Messages API while merging Claude Code's late system messages into their
     adjacent user messages and deterministically bounding each text tool
     result. The transformation keeps prior prompt prefixes stable so Ollama can
-    reuse Qwen3.8 context checkpoints across turns.
+    reuse Qwen3.8 context checkpoints across turns. Only POST /v1/messages and
+    GET /api/version are forwarded to the Ollama upstream; any other method or
+    path returns 404 without an upstream call. Requests must present a matching
+    shared secret via x-api-key or Authorization: Bearer.
 servers:
   - url: http://127.0.0.1:11440
 paths:
@@ -15,6 +18,9 @@ paths:
     post:
       operationId: createMessage
       summary: Create or stream an Anthropic-compatible message
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -38,6 +44,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid shared-secret API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: Ollama upstream is unavailable
           content:
@@ -48,6 +60,9 @@ paths:
     get:
       operationId: getUpstreamVersion
       summary: Return the upstream Ollama version
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
       responses:
         '200':
           description: Ollama version response
@@ -59,7 +74,21 @@ paths:
                 properties:
                   version:
                     type: string
+        '401':
+          description: Missing or invalid shared-secret API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+    BearerAuth:
+      type: http
+      scheme: bearer
   schemas:
     MessagesRequest:
       type: object

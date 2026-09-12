@@ -37,6 +37,20 @@ HOP_BY_HOP = {
     "upgrade",
 }
 CLIENT_AUTH_HEADERS = {"authorization", "x-api-key"}
+# Only Claude Code / health surfaces are forwarded to Ollama. Everything else
+# (pull, delete, tags, admin, arbitrary methods) returns 404 without an upstream call.
+ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/v1/messages"),
+        ("GET", "/api/version"),
+    }
+)
+
+
+def is_allowed_route(method: str, path: str) -> bool:
+    """Return True when method+path is on the Claude Code / health allowlist."""
+    normalized_path = urlsplit(path).path or "/"
+    return (method.upper(), normalized_path) in ALLOWED_ROUTES
 
 
 def is_loopback_host(host: str) -> bool:
@@ -311,11 +325,21 @@ class CompatHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if not is_allowed_route(self.command, self.path):
+                self._send_anthropic_error(
+                    404,
+                    "not_found_error",
+                    f"Not found: {self.command} {urlsplit(self.path).path or '/'}. "
+                    "This proxy only exposes POST /v1/messages and GET /api/version.",
+                )
+                return
+
             body = self._read_body()
             rewritten = 0
             shortened = 0
             removed_chars = 0
-            if self.command == "POST" and urlsplit(self.path).path == "/v1/messages":
+            request_path = urlsplit(self.path).path
+            if self.command == "POST" and request_path == "/v1/messages":
                 try:
                     payload = json.loads(body)
                 except json.JSONDecodeError as error:
@@ -340,7 +364,7 @@ class CompatHandler(BaseHTTPRequestHandler):
             meter = (
                 TurnMeter()
                 if self.command == "POST"
-                and urlsplit(self.path).path == "/v1/messages"
+                and request_path == "/v1/messages"
                 and response.status == 200
                 else None
             )

@@ -7,6 +7,7 @@ from anthropic_proxy import (
     compact_anthropic_tool_results,
     credential_matches,
     extract_request_credential,
+    is_allowed_route,
     is_loopback_host,
     normalize_anthropic_request,
 )
@@ -229,6 +230,86 @@ class CompatAuthTests(unittest.TestCase):
         ):
             handler._proxy()
         self.assertEqual(sent["status"], 401)
+        upstream.assert_not_called()
+
+
+class CompatRouteAllowlistTests(unittest.TestCase):
+    def test_allowlist_accepts_documented_routes(self):
+        self.assertTrue(is_allowed_route("POST", "/v1/messages"))
+        self.assertTrue(is_allowed_route("POST", "/v1/messages?beta=true"))
+        self.assertTrue(is_allowed_route("GET", "/api/version"))
+        self.assertTrue(is_allowed_route("get", "/api/version"))
+
+    def test_allowlist_rejects_management_and_other_methods(self):
+        self.assertFalse(is_allowed_route("POST", "/api/pull"))
+        self.assertFalse(is_allowed_route("DELETE", "/api/delete"))
+        self.assertFalse(is_allowed_route("GET", "/api/tags"))
+        self.assertFalse(is_allowed_route("GET", "/v1/models"))
+        self.assertFalse(is_allowed_route("HEAD", "/api/version"))
+        self.assertFalse(is_allowed_route("OPTIONS", "/v1/messages"))
+        self.assertFalse(is_allowed_route("GET", "/v1/messages"))
+
+    def _handler(self, method: str, path: str, headers: dict[str, str] | None = None):
+        handler = CompatHandler.__new__(CompatHandler)
+        handler.command = method
+        handler.path = path
+        handler.headers = {"x-api-key": "ollama"} if headers is None else headers
+        handler.client_address = ("127.0.0.1", 1)
+        handler.close_connection = False
+        return handler
+
+    def test_proxy_returns_404_for_disallowed_route_without_upstream(self):
+        handler = self._handler("POST", "/api/pull")
+        sent: dict[str, object] = {}
+
+        def capture(status: int, error_type: str, message: str) -> None:
+            sent["status"] = status
+            sent["error_type"] = error_type
+            sent["message"] = message
+
+        handler._send_anthropic_error = capture  # type: ignore[method-assign]
+        with (
+            patch("anthropic_proxy.COMPAT_TOKEN", "ollama"),
+            patch("anthropic_proxy.http.client.HTTPConnection") as upstream,
+        ):
+            handler._proxy()
+
+        self.assertEqual(sent["status"], 404)
+        self.assertEqual(sent["error_type"], "not_found_error")
+        self.assertIn("POST /v1/messages", str(sent["message"]))
+        upstream.assert_not_called()
+
+    def test_proxy_returns_404_for_delete_without_upstream(self):
+        handler = self._handler("DELETE", "/api/delete")
+        sent: dict[str, object] = {}
+        handler._send_anthropic_error = (  # type: ignore[method-assign]
+            lambda status, error_type, message: sent.update(
+                status=status, error_type=error_type
+            )
+        )
+        with (
+            patch("anthropic_proxy.COMPAT_TOKEN", "ollama"),
+            patch("anthropic_proxy.http.client.HTTPConnection") as upstream,
+        ):
+            handler._proxy()
+        self.assertEqual(sent["status"], 404)
+        upstream.assert_not_called()
+
+    def test_auth_checked_before_allowlist(self):
+        handler = self._handler("POST", "/api/pull", headers={})
+        sent: dict[str, object] = {}
+        handler._send_anthropic_error = (  # type: ignore[method-assign]
+            lambda status, error_type, message: sent.update(
+                status=status, error_type=error_type
+            )
+        )
+        with (
+            patch("anthropic_proxy.COMPAT_TOKEN", "ollama"),
+            patch("anthropic_proxy.http.client.HTTPConnection") as upstream,
+        ):
+            handler._proxy()
+        self.assertEqual(sent["status"], 401)
+        self.assertEqual(sent["error_type"], "authentication_error")
         upstream.assert_not_called()
 
 

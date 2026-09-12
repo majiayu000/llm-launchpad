@@ -72,7 +72,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 会读取同一环境变量。
+Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。兼容层只转发允许的路由到上游 Ollama：`POST /v1/messages`（Claude Code）与 `GET /api/version`（健康检查）；其余方法/路径（如 `POST /api/pull`、`DELETE /api/delete`、`GET /api/tags`）直接返回 404，不访问上游。`scripts/claude-code.sh` 会读取同一环境变量。
 
 ```bash
 curl http://127.0.0.1:11440/v1/messages \
@@ -99,7 +99,7 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 
 - 与机器上已有的 Ollama 完全隔离：独立端口、独立模型目录（`~/.local/share/qwen38-ollama`）、独立 launchd 服务（`com.local.qwen38-ollama`）
 - 上下文 65536 tokens，模型常驻内存（`keep_alive=-1`），不与其他实例抢内存
-- 兼容层（`compat/anthropic_proxy.py`，仅 Python 标准库）把 Claude Code 的 Anthropic 请求转成 Ollama 格式。它做两件对性能关键的事：
+- 兼容层（`compat/anthropic_proxy.py`，仅 Python 标准库）把 Claude Code 的 Anthropic 请求转成 Ollama 格式。它只暴露 `POST /v1/messages` 与 `GET /api/version`，并做两件对性能关键的事：
   1. Claude Code 会在对话中途插入 system 消息，Ollama 直接拒绝；兼容层把它们并入相邻 user 消息，顶层 system 前缀保持不变，**已完成轮次的字节不变**，从而不破坏 Ollama 的前缀缓存
   2. 超长 `Read`/`Bash` 输出按确定性规则缩略到最多 2000 字符，同一段历史每轮截得完全一样，同样为了缓存命中；模型需要更多源码时会按 offset/limit 定向重读
 - Claude Code 入口使用独立配置目录（`~/.local/share/qwen38-ollama/claude`），不影响 `~/.claude` 里的其他配置。为避免 27B 每轮冷处理 Claude Code 默认 25 个工具的超长提示，默认精简系统提示、只开放 `Bash/Edit/Read/Write` 四个工具、单次 `Read` 输出限 2500 token
