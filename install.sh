@@ -150,11 +150,17 @@ PY
 echo "模型回复：$REPLY"
 
 # ---------- 6. 完成 ----------
+COMPAT_BIND_HOST="${QWEN38_COMPAT_HOST-127.0.0.1}"
+COMPAT_CLIENT_HOST="$COMPAT_BIND_HOST"
+if [[ -z "$COMPAT_BIND_HOST" || "$COMPAT_BIND_HOST" == "0.0.0.0" ]]; then
+  COMPAT_BIND_HOST="0.0.0.0"
+  COMPAT_CLIENT_HOST="127.0.0.1"
+fi
 say "安装完成"
 cat <<EOF
-本机服务（只监听 127.0.0.1，不暴露局域网）：
-  OpenAI 兼容 API    $API/v1
-  Anthropic 兼容 API  http://127.0.0.1:11440（供 Claude Code 使用）
+服务入口：
+  OpenAI 兼容 API    $API/v1（监听 127.0.0.1）
+  Anthropic 兼容 API  http://$COMPAT_CLIENT_HOST:11440（监听 $COMPAT_BIND_HOST，供 Claude Code 使用）
 
 四种使用方式：
   1. 命令行对话     ./scripts/chat.sh '你好'

@@ -173,6 +173,70 @@ class LaunchdEnvironmentTests(unittest.TestCase):
                 self.assertEqual(client.returncode, 0, client.stderr)
                 self.assertEqual(json.loads(client.stdout)["base_url"], f"http://{probe_host}:11440")
 
+    def test_install_summary_reports_effective_bind_and_client_endpoint(self):
+        self.write_command("uname", '#!/bin/zsh\nif [[ "$1" == -s ]]; then echo Darwin; else echo arm64; fi\n')
+        self.write_command("sysctl", "#!/bin/zsh\necho 34359738368\n")
+        self.write_command("df", "#!/bin/zsh\nprintf 'Filesystem blocks used available capacity mounted\nfixture 100000000 0 100000000 0 /\n'\n")
+        self.write_command("lsof", "#!/bin/zsh\nexit 1\n")
+        self.write_command(
+            "curl", f"#!{sys.executable}\nimport json, os, sys\n"
+            'url = next(arg for arg in sys.argv[1:] if arg.startswith("http://"))\n'
+            'expected = os.environ["TEST_COMPAT_URL"]\n'
+            'if ":11440/" in url and url != expected: sys.exit(1)\n'
+            'print(json.dumps({"choices": [{"message": {"content": "OK"}}], "version": "dummy-version"}))\n',
+        )
+        self.env.update({"QWEN38_SIM_FRESH": "1", "QWEN38_COMPAT_TOKEN": "dummy-summary"})
+        Path(self.env["HOME"]).mkdir()
+        for host, bind_host, client_host in (
+            (None, "127.0.0.1", "127.0.0.1"), ("localhost", "localhost", "localhost"),
+            ("192.0.2.10", "192.0.2.10", "192.0.2.10"),
+            ("0.0.0.0", "0.0.0.0", "127.0.0.1"), ("", "0.0.0.0", "127.0.0.1"),
+        ):
+            with self.subTest(host=host):
+                if host is None:
+                    self.env.pop("QWEN38_COMPAT_HOST", None)
+                else:
+                    self.env["QWEN38_COMPAT_HOST"] = host
+                self.env["TEST_COMPAT_URL"] = f"http://{client_host}:11440/api/version"
+                result = subprocess.run(
+                    [str(ROOT / "install.sh")], cwd=ROOT, env=self.env,
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary = result.stdout.split("==> 安装完成", 1)[1]
+                self.assertIn(f"http://{client_host}:11440", summary)
+                self.assertIn(f"监听 {bind_host}", summary)
+                self.assertIn("监听 127.0.0.1", summary)
+                self.assertNotIn("只监听 127.0.0.1，不暴露局域网", summary)
+                self.assertNotIn("dummy-summary", summary)
+
+    def test_padded_hosts_are_rejected_before_replacing_or_bootstrapping_compat(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-host"
+        for symlink in (False, True):
+            for host in (" 127.0.0.1 ", "\tlocalhost\n", " 192.0.2.10 ", " 0.0.0.0 ", "   "):
+                with self.subTest(host=host, symlink=symlink):
+                    if self.installed.exists() or self.installed.is_symlink():
+                        self.installed.unlink()
+                    if symlink:
+                        self.installed.symlink_to(target)
+                    else:
+                        self.installed.write_bytes(b"previous plist")
+                    self.capture.write_text("")
+                    self.env["QWEN38_COMPAT_HOST"] = host
+                    self.env["QWEN38_COMPAT_TOKEN"] = "" if host.strip() in ("127.0.0.1", "localhost") else "dummy-host"
+                    result = self.run_script("start.sh")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("QWEN38_COMPAT_HOST", result.stderr)
+                    self.assertIn("whitespace", result.stderr)
+                    self.assertEqual(self.installed.is_symlink(), symlink)
+                    self.assertEqual(self.installed.read_bytes(), b"previous plist")
+                    self.assertEqual(target.read_bytes(), b"previous plist")
+                    self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+                    self.assertEqual(list(self.installed.parent.glob(".launchd-*")), [])
+
     def test_ipv6_is_rejected_before_replacing_or_bootstrapping_compat(self):
         target = self.temp / "original.plist"
         target.write_bytes(b"previous plist")
