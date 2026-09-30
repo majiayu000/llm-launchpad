@@ -76,7 +76,7 @@ print(response.choices[0].message.content)
 
 Anthropic Messages 兼容入口默认在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 和 `scripts/status.sh` 读取已安装 launchd plist 中的监听地址和 token，显式设置的环境变量优先；新终端无需重复导出安装时的配置。
 
-`QWEN38_COMPAT_HOST` 可设为 IPv4 地址或主机名，Claude Code 入口会使用同一地址；通配监听地址使用回环连接。安装时拒绝 IPv6 地址、首尾含空白的监听地址或 token，以及包含 CR/LF 的 token。非回环监听必须显式设置非空且不同于公开默认值 `ollama` 的 `QWEN38_COMPAT_TOKEN`。
+`QWEN38_COMPAT_HOST` 可设为 IPv4 地址或主机名，Claude Code 入口会使用同一地址；通配监听地址使用回环连接。安装时拒绝 IPv6 地址、首尾含空白的监听地址或 token；token 仅接受可打印 ASCII 字符。非回环监听必须显式设置非空且不同于公开默认值 `ollama` 的 `QWEN38_COMPAT_TOKEN`。
 
 ```bash
 curl http://127.0.0.1:11440/v1/messages \
@@ -121,7 +121,7 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 
 速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
 
-`QWEN38_METER_FILE` 的相对路径统一以 `~/.local/share/qwen38-ollama/compat` 为基准，与启动命令所在目录无关。
+`QWEN38_METER_FILE` 的相对路径统一以 `~/.local/share/qwen38-ollama/compat` 为基准，与启动命令所在目录无关。速度计读取已安装 plist 中的路径（包括空值），显式环境变量优先。
 
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
 

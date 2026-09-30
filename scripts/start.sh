@@ -69,8 +69,8 @@ if settings["Label"] == "com.local.qwen38-ollama-compat":
         token = environment["QWEN38_COMPAT_TOKEN"]
         if token != token.strip():
             raise SystemExit("QWEN38_COMPAT_TOKEN must not contain leading or trailing whitespace.")
-        if "\r" in token or "\n" in token:
-            raise SystemExit("QWEN38_COMPAT_TOKEN must not contain CR or LF characters.")
+        if any(ord(character) < 32 or ord(character) > 126 for character in token):
+            raise SystemExit("QWEN38_COMPAT_TOKEN must contain only printable ASCII HTTP header characters (no controls, CR or LF).")
         assert_listen_host_allowed(environment["QWEN38_COMPAT_HOST"], environment["QWEN38_COMPAT_TOKEN"])
         if not is_loopback_host(host) and ("QWEN38_COMPAT_TOKEN" not in os.environ or token == "ollama"):
             raise SystemExit("Non-loopback QWEN38_COMPAT_HOST requires an explicit non-default QWEN38_COMPAT_TOKEN.")
@@ -122,7 +122,7 @@ if [[ -z "$COMPAT_PROBE_HOST" || "$COMPAT_PROBE_HOST" == "0.0.0.0" ]]; then
 fi
 
 for attempt in {1..30}; do
-  if curl -fsS "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
+  if curl -fsS -H "x-api-key: ${QWEN38_COMPAT_TOKEN-ollama}" "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
     echo "Qwen3.8 Ollama 独立服务已启动：$version"
     echo "原生 API: http://127.0.0.1:11439"
     echo "Claude Code API: http://$COMPAT_PROBE_HOST:11440"

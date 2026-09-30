@@ -79,7 +79,31 @@ echo "✔ 磁盘空闲 ${DISK_GB}GB（需要 ≥${NEED_DISK_GB}GB）"
 
 for port in 11439 11440; do
   if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1; then
-    curl -fsS --max-time 3 "http://127.0.0.1:$port/api/version" >/dev/null 2>&1 \
+    probe_headers=()
+    probe_host="127.0.0.1"
+    if [[ "$port" == 11440 ]]; then
+      COMPAT_SETTINGS=("${(@0)$(python3 - "$HOME/Library/LaunchAgents/com.local.qwen38-ollama-compat.plist" <<'PY'
+import os
+import plistlib
+import sys
+from pathlib import Path
+
+installed = Path(sys.argv[1])
+environment = {"QWEN38_COMPAT_HOST": "127.0.0.1", "QWEN38_COMPAT_TOKEN": "ollama"}
+if installed.exists():
+    environment = plistlib.loads(installed.read_bytes())["EnvironmentVariables"]
+sys.stdout.write("\0".join(os.environ.get(name, environment[name]) for name in (
+    "QWEN38_COMPAT_HOST", "QWEN38_COMPAT_TOKEN",
+)))
+PY
+)}")
+      probe_host="${COMPAT_SETTINGS[1]}"
+      if [[ -z "$probe_host" || "$probe_host" == "0.0.0.0" ]]; then
+        probe_host="127.0.0.1"
+      fi
+      probe_headers=(-H "x-api-key: ${COMPAT_SETTINGS[2]}")
+    fi
+    curl -fsS --max-time 3 "${probe_headers[@]}" "http://$probe_host:$port/api/version" >/dev/null 2>&1 \
       || die "端口 $port 已被其他程序占用，请先处理后再安装"
   fi
 done

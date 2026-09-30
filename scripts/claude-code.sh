@@ -6,13 +6,22 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 1
 fi
 
-CLAUDE_STATE_DIR="$HOME/.local/share/qwen38-ollama/claude"
+STATE_DIR="$HOME/.local/share/qwen38-ollama"
+if [[ -f "$STATE_DIR/env.sh" ]]; then
+  source "$STATE_DIR/env.sh"
+fi
+PYTHON_BIN="${QWEN38_PYTHON_BIN:-$(command -v python3 || true)}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "未找到 python3，请先运行 ./install.sh" >&2
+  exit 1
+fi
+CLAUDE_STATE_DIR="$STATE_DIR/claude"
 mkdir -p "$CLAUDE_STATE_DIR"
 
 # Claude Code 2.1.233 会从 ~/.claude/settings.json 重新注入 env。
 # 使用独立配置目录，避免全局智谱/Anthropic配置覆盖本地 Ollama。
 export CLAUDE_CONFIG_DIR="$CLAUDE_STATE_DIR"
-COMPAT_SETTINGS=("${(@0)$(python3 - "$HOME/Library/LaunchAgents/com.local.qwen38-ollama-compat.plist" <<'PY'
+COMPAT_SETTINGS=("${(@0)$("$PYTHON_BIN" - "$HOME/Library/LaunchAgents/com.local.qwen38-ollama-compat.plist" <<'PY'
 import os
 import plistlib
 import sys

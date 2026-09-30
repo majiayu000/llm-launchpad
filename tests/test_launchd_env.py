@@ -1,12 +1,15 @@
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +96,161 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def prepare_real_probes(self, host="127.0.0.1", token="dummy-probe"):
+        sys.path.insert(0, str(ROOT / "compat"))
+        import anthropic_proxy
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"version": "dummy-version", "models": []}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"choices":[{"message":{"content":"OK"}}]}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler)
+                   for handler in (Upstream, anthropic_proxy.CompatHandler)]
+        settings = patch.multiple(anthropic_proxy, UPSTREAM_HOST="127.0.0.1",
+                                  UPSTREAM_PORT=servers[0].server_port, COMPAT_TOKEN=token)
+        settings.start()
+        self.addCleanup(settings.stop)
+        for server in servers:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(thread.join)
+            self.addCleanup(server.shutdown)
+        self.env.update({
+            "TEST_REAL_CURL": shutil.which("curl"),
+            "TEST_OLLAMA_URL": f"http://127.0.0.1:{servers[0].server_port}",
+            "TEST_REAL_COMPAT_URL": f"http://127.0.0.1:{servers[1].server_port}",
+            "TEST_COMPAT_URL": f"http://{host}:11440/api/version",
+        })
+        # Route only the expected synthetic endpoint to ephemeral loopback.
+        # An incorrect host fails without reaching a real service or LAN address.
+        self.write_command("curl", f"#!{sys.executable}\n" + '''import os, sys
+args = sys.argv[1:]
+for index, arg in enumerate(args):
+    if arg.startswith("http://127.0.0.1:11439/"):
+        args[index] = arg.replace("http://127.0.0.1:11439", os.environ["TEST_OLLAMA_URL"])
+    elif arg == os.environ["TEST_COMPAT_URL"]:
+        args[index] = os.environ["TEST_REAL_COMPAT_URL"] + "/api/version"
+    elif arg.startswith("http://"):
+        sys.exit(1)
+os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
+''')
+
+    def test_readiness_authenticates_real_proxy_at_configured_endpoint(self):
+        self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe"})
+        self.prepare_real_probes(host="192.0.2.10")
+        result = self.run_script("start.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("dummy-probe", result.stdout + result.stderr)
+
+    def test_status_authenticates_with_persisted_token_and_preserves_wrong_token_result(self):
+        self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe"})
+        self.start()
+        del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
+        self.write_command("launchctl", "#!/bin/zsh\nexit 0\n")
+        self.prepare_real_probes(host="192.0.2.10")
+        result = self.run_script("status.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["claude_compat_running"])
+        self.assertNotIn("dummy-probe", result.stdout + result.stderr)
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-wrong"
+        result = self.run_script("status.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["claude_compat_running"])
+
+    def test_repeat_install_probes_persisted_concrete_host_and_explicit_overrides(self):
+        self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe"})
+        self.start()
+        del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
+        self.prepare_real_probes(host="192.0.2.10")
+        self.write_command("uname", '#!/bin/zsh\n[[ "$1" == -s ]] && echo Darwin || echo arm64\n')
+        self.write_command("sysctl", "#!/bin/zsh\necho 34359738368\n")
+        self.write_command("df", "#!/bin/zsh\nprintf 'Filesystem Blocks Used Available\nfixture 0 0 104857600\n'\n")
+        self.write_command("lsof", "#!/bin/zsh\nexit 0\n")
+        for host in (None, "localhost", "0.0.0.0", ""):
+            with self.subTest(host=host):
+                if host is not None:
+                    self.env["QWEN38_COMPAT_HOST"] = host
+                    effective_host = host if host and host != "0.0.0.0" else "127.0.0.1"
+                    self.env["TEST_COMPAT_URL"] = f"http://{effective_host}:11440/api/version"
+                result = subprocess.run([str(ROOT / "install.sh"), "--check"], cwd=ROOT,
+                                        env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("预检通过", result.stdout)
+                self.assertNotIn("dummy-probe", result.stdout + result.stderr)
+        self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe",
+                         "TEST_COMPAT_URL": "http://192.0.2.10:11440/api/version"})
+        result = subprocess.run([str(ROOT / "install.sh")], cwd=ROOT,
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("安装完成", result.stdout)
+        self.assertNotIn("dummy-probe", result.stdout + result.stderr)
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-wrong"
+        result = subprocess.run([str(ROOT / "install.sh"), "--check"], cwd=ROOT,
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("端口 11440 已被其他程序占用", result.stderr)
+
+    def test_header_unsafe_tokens_preserve_installed_files_and_symlinks(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        for symlink in (False, True):
+            for token in ("密钥", "dummy-🔑", "dummy\x7ftoken", "dummy\ttoken"):
+                with self.subTest(symlink=symlink, token=token):
+                    if self.installed.exists() or self.installed.is_symlink():
+                        self.installed.unlink()
+                    if symlink:
+                        self.installed.symlink_to(target)
+                    else:
+                        self.installed.write_bytes(b"previous plist")
+                    self.capture.write_text("")
+                    self.env["QWEN38_COMPAT_TOKEN"] = token
+                    result = self.run_script("start.sh")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("HTTP header", result.stderr)
+                    self.assertNotIn(token, result.stderr)
+                    self.assertEqual(self.installed.is_symlink(), symlink)
+                    self.assertEqual(self.installed.read_bytes(), b"previous plist")
+                    self.assertEqual(target.read_bytes(), b"previous plist")
+                    self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+                    self.assertEqual(list(self.installed.parent.glob(".launchd-*")), [])
+
+    def test_printable_token_with_internal_spaces_is_preserved(self):
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy internal space!~"
+        self.assertEqual(self.start()["EnvironmentVariables"]["QWEN38_COMPAT_TOKEN"],
+                         self.env["QWEN38_COMPAT_TOKEN"])
+
+    def test_client_uses_recorded_interpreter_without_python_on_path(self):
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-recorded"
+        self.start()
+        state = Path(self.env["HOME"]) / ".local/share/qwen38-ollama"
+        (state / "env.sh").write_text(f'export QWEN38_PYTHON_BIN="{sys.executable}"\n')
+        (self.bin_dir / "mkdir").symlink_to(shutil.which("mkdir"))
+        self.env["PATH"] = str(self.bin_dir)
+        del self.env["QWEN38_PYTHON_BIN"], self.env["QWEN38_COMPAT_TOKEN"]
+        self.assertIsNone(shutil.which("python3", path=self.env["PATH"]))
+        result = self.run_script("claude-code.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {
+            "base_url": "http://127.0.0.1:11440", "token": "dummy-recorded",
+        })
 
     def test_unset_values_preserve_defaults_and_client_token(self):
         settings = self.start()["EnvironmentVariables"]
@@ -475,7 +633,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream, \
         self.env["QWEN38_COMPAT_TOKEN"] = "dummy\x01token"
         result = self.run_script("start.sh")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ValueError", result.stderr)
+        self.assertIn("HTTP header", result.stderr)
         self.assertTrue(self.installed.is_symlink())
         self.assertEqual(target.read_bytes(), b"previous plist")
         self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
@@ -505,6 +663,8 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream, \
         self.write_command(
             "python3",
             f"#!{sys.executable}\nimport builtins, os, sys, time\n"
+            'if len(sys.argv) > 1:\n'
+            '    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n'
             'original_open = builtins.open\n'
             'def open_snapshot(path, *args, **kwargs):\n'
             '    if path == "/tmp/qwen38-ollama-meter.json":\n'
@@ -517,6 +677,33 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream, \
             'exec(compile(sys.stdin.read(), "meter.sh", "exec"))\n',
         )
         return snapshot
+
+    def test_fresh_meter_reads_installed_normalized_path_and_empty_setting(self):
+        self.env["QWEN38_METER_FILE"] = "meter.json"
+        settings = self.start()
+        meter_file = Path(settings["EnvironmentVariables"]["QWEN38_METER_FILE"])
+        meter_file.write_text(json.dumps({"last_completed": {"output_tokens": 73}}))
+        del self.env["QWEN38_METER_FILE"]
+        snapshot = self.prepare_meter()
+        result = self.run_script("meter.sh", cwd=self.temp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("73 tok", result.stdout)
+        self.assertNotIn("9876.5", result.stdout)
+        self.env["QWEN38_METER_FILE"] = str(snapshot)
+        result = self.run_script("meter.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("9876.5", result.stdout)
+        self.env["QWEN38_METER_FILE"] = ""
+        self.start()
+        del self.env["QWEN38_METER_FILE"]
+        result = self.run_script("meter.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("已关闭", result.stdout)
+        self.assertNotIn("9876.5", result.stdout)
+        self.env["QWEN38_METER_FILE"] = str(snapshot)
+        result = self.run_script("meter.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("9876.5", result.stdout)
 
     def test_relative_meter_path_matches_proxy_from_another_directory(self):
         self.env["QWEN38_METER_FILE"] = "meter.json"
