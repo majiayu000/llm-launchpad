@@ -20,12 +20,24 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.bin_dir = self.temp / "bin"
         self.bin_dir.mkdir()
         self.capture = self.temp / "launchctl.txt"
+        self.curl_capture = self.temp / "curl.jsonl"
         self.write_command(
             "launchctl",
             '#!/bin/zsh\nprintf "%s\\n" "$*" >> "$TEST_LAUNCHCTL_CAPTURE"\n'
             '[[ "$1" != print ]]\n',
         )
-        self.write_command("curl", '#!/bin/zsh\nprintf \'{"version":"test-version"}\\n\'\n')
+        self.write_command(
+            "curl",
+            f"#!{sys.executable}\nimport json, os, sys\n"
+            'url = sys.argv[-1]\n'
+            'with open(os.environ["TEST_CURL_CAPTURE"], "a") as handle:\n'
+            '    handle.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+            'expected = os.environ.get("TEST_COMPAT_URL")\n'
+            'if ":11440/" in url and expected and url != expected:\n'
+            '    sys.exit(1)\n'
+            'print(json.dumps({"version": "test-version"}))\n',
+        )
+        self.write_command("sleep", "#!/bin/zsh\nexit 0\n")
         self.write_command("ollama", "#!/bin/zsh\nexit 0\n")
         self.write_command(
             "claude",
@@ -42,6 +54,7 @@ class LaunchdEnvironmentTests(unittest.TestCase):
             "QWEN38_OLLAMA_BIN": str(self.bin_dir / "ollama"),
             "QWEN38_PYTHON_BIN": sys.executable,
             "TEST_LAUNCHCTL_CAPTURE": str(self.capture),
+            "TEST_CURL_CAPTURE": str(self.curl_capture),
         })
         self.installed = Path(self.env["HOME"]) / "Library/LaunchAgents" / f"{COMPAT_LABEL}.plist"
 
@@ -137,6 +150,109 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.assertIn("Refusing to bind", result.stderr)
         self.assertEqual(self.installed.read_bytes(), original)
         self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+
+    def test_readiness_uses_configured_host_and_loopback_for_wildcard(self):
+        for host, probe_host in (
+            ("192.0.2.10", "192.0.2.10"), ("localhost", "localhost"),
+            ("127.0.0.1", "127.0.0.1"), ("0.0.0.0", "127.0.0.1"),
+            ("", "127.0.0.1"),
+        ):
+            with self.subTest(host=host):
+                self.env.update({
+                    "QWEN38_COMPAT_HOST": host, "QWEN38_COMPAT_TOKEN": "dummy-host",
+                    "TEST_COMPAT_URL": f"http://{probe_host}:11440/api/version",
+                })
+                self.curl_capture.write_text("")
+                self.start()
+                probes = [json.loads(line)[-1] for line in self.curl_capture.read_text().splitlines()]
+                compat_probes = [url for url in probes if ":11440/" in url]
+                self.assertEqual(compat_probes, [self.env["TEST_COMPAT_URL"]])
+
+    def test_rejected_config_preserves_installed_symlink_and_target(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        self.installed.symlink_to(target)
+        self.env.update({"QWEN38_COMPAT_HOST": "0.0.0.0", "QWEN38_COMPAT_TOKEN": ""})
+        result = self.run_script("start.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Refusing to bind", result.stderr)
+        self.assertTrue(self.installed.is_symlink())
+        self.assertEqual(self.installed.readlink(), target)
+        self.assertEqual(target.read_bytes(), b"previous plist")
+        self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+
+    def test_render_failure_preserves_installed_symlink_and_target(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        self.installed.symlink_to(target)
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy\x01token"
+        result = self.run_script("start.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ValueError", result.stderr)
+        self.assertTrue(self.installed.is_symlink())
+        self.assertEqual(target.read_bytes(), b"previous plist")
+        self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+        self.assertEqual(list(self.installed.parent.glob(".launchd-*")), [])
+
+    def test_success_replaces_symlink_without_modifying_target(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        target.chmod(0o644)
+        self.installed.parent.mkdir(parents=True)
+        self.installed.symlink_to(target)
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-replacement"
+        settings = self.start()["EnvironmentVariables"]
+        self.assertEqual(settings["QWEN38_COMPAT_TOKEN"], "dummy-replacement")
+        self.assertFalse(self.installed.is_symlink())
+        self.assertEqual(self.installed.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.read_bytes(), b"previous plist")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(list(self.installed.parent.glob(".launchd-*")), [])
+
+    def prepare_meter(self):
+        snapshot = self.temp / "stale-meter.json"
+        snapshot.write_text(json.dumps({"last_completed": {"tok_s": 9876.5}}))
+        self.env["TEST_METER_SNAPSHOT"] = str(snapshot)
+        # Execute the actual meter Python body for one frame. Redirect its default
+        # path to a dummy snapshot so no user's meter file is read or overwritten.
+        self.write_command(
+            "python3",
+            f"#!{sys.executable}\nimport builtins, os, sys, time\n"
+            'original_open = builtins.open\n'
+            'def open_snapshot(path, *args, **kwargs):\n'
+            '    if path == "/tmp/qwen38-ollama-meter.json":\n'
+            '        path = os.environ["TEST_METER_SNAPSHOT"]\n'
+            '    return original_open(path, *args, **kwargs)\n'
+            'builtins.open = open_snapshot\n'
+            'def stop_after_frame(_):\n'
+            '    raise KeyboardInterrupt\n'
+            'time.sleep = stop_after_frame\n'
+            'exec(compile(sys.stdin.read(), "meter.sh", "exec"))\n',
+        )
+        return snapshot
+
+    def test_empty_meter_does_not_display_stale_default_snapshot(self):
+        self.prepare_meter()
+        self.env["QWEN38_METER_FILE"] = ""
+        result = self.run_script("meter.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("已关闭", result.stdout)
+        self.assertNotIn("9876.5", result.stdout)
+        self.assertNotIn("暂无数据", result.stderr)
+
+    def test_meter_preserves_unset_default_and_custom_path(self):
+        snapshot = self.prepare_meter()
+        for path in (None, str(snapshot)):
+            with self.subTest(path=path):
+                if path is None:
+                    self.env.pop("QWEN38_METER_FILE", None)
+                else:
+                    self.env["QWEN38_METER_FILE"] = path
+                result = self.run_script("meter.sh")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("9876.5", result.stdout)
 
     def test_generated_token_is_owner_private_even_when_replacing_public_plist(self):
         self.installed.parent.mkdir(parents=True)

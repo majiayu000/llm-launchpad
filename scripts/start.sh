@@ -33,14 +33,12 @@ reload_agent() {
   local source_plist="$PROJECT_ROOT/launchd/$label.plist"
   local installed_plist="$HOME/Library/LaunchAgents/$label.plist"
 
-  if [[ -L "$installed_plist" ]]; then
-    unlink "$installed_plist"
-  fi
   "$PYTHON_BIN" - "$source_plist" "$installed_plist" "$PROJECT_ROOT" \
     "$OLLAMA_BIN" "$PYTHON_BIN" "$STATE_DIR" "$LOG_DIR" <<'PY'
 import os
 import plistlib
 import sys
+import tempfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -67,9 +65,12 @@ if settings["Label"] == "com.local.qwen38-ollama-compat":
         print(error, file=sys.stderr)
         sys.exit(1)
 
-with open(installed, "wb") as handle:
-    os.fchmod(handle.fileno(), 0o600)
-    plistlib.dump(settings, handle, sort_keys=False)
+with tempfile.TemporaryDirectory(prefix=".launchd-", dir=Path(installed).parent) as staging:
+    rendered = Path(staging) / "agent.plist"
+    with rendered.open("wb") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        plistlib.dump(settings, handle, sort_keys=False)
+    os.replace(rendered, installed)
 PY
   if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
@@ -102,11 +103,16 @@ fi
 
 reload_agent "$COMPAT_LABEL"
 
+COMPAT_PROBE_HOST="${QWEN38_COMPAT_HOST-127.0.0.1}"
+if [[ -z "$COMPAT_PROBE_HOST" || "$COMPAT_PROBE_HOST" == "0.0.0.0" ]]; then
+  COMPAT_PROBE_HOST="127.0.0.1"
+fi
+
 for attempt in {1..30}; do
-  if curl -fsS http://127.0.0.1:11440/api/version >/dev/null 2>&1; then
+  if curl -fsS "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
     echo "Qwen3.8 Ollama 独立服务已启动：$version"
     echo "原生 API: http://127.0.0.1:11439"
-    echo "Claude Code API: http://127.0.0.1:11440"
+    echo "Claude Code API: http://$COMPAT_PROBE_HOST:11440"
     exit 0
   fi
   sleep 1
