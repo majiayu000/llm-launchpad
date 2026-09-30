@@ -1,6 +1,8 @@
-# Qwen3.8-27B · 本地一键部署（Ollama）
+# LLM Launchpad · Qwen3.8-27B 本地部署（Ollama）
 
 在你的 Apple Silicon Mac 上一条命令跑起 Qwen3.8-27B，提供 OpenAI 兼容 API，并可直接作为 Claude Code 或 Codex CLI 的后端模型。默认只监听 `127.0.0.1`，模型推理在本机完成；首次安装需要联网下载运行时和模型。
+
+[硬件要求](#硬件要求) · [安装与预检](#一键安装) · [Claude Code、Codex 和 API 用法](#四种使用方式) · [服务管理](#管理) · [已知限制](#已知限制)
 
 ## 硬件要求
 
