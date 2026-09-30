@@ -52,7 +52,7 @@ for placeholder, value in (
 settings = plistlib.loads(template.encode("utf-8"))
 if settings["Label"] == "com.local.qwen38-ollama-compat":
     sys.path.insert(0, str(Path(project) / "compat"))
-    from anthropic_proxy import assert_listen_host_allowed
+    from anthropic_proxy import assert_listen_host_allowed, is_loopback_host
 
     environment = settings["EnvironmentVariables"]
     for name in ("QWEN38_COMPAT_TOKEN", "QWEN38_COMPAT_HOST"):
@@ -69,7 +69,11 @@ if settings["Label"] == "com.local.qwen38-ollama-compat":
         token = environment["QWEN38_COMPAT_TOKEN"]
         if token != token.strip():
             raise SystemExit("QWEN38_COMPAT_TOKEN must not contain leading or trailing whitespace.")
+        if "\r" in token or "\n" in token:
+            raise SystemExit("QWEN38_COMPAT_TOKEN must not contain CR or LF characters.")
         assert_listen_host_allowed(environment["QWEN38_COMPAT_HOST"], environment["QWEN38_COMPAT_TOKEN"])
+        if not is_loopback_host(host) and ("QWEN38_COMPAT_TOKEN" not in os.environ or token == "ollama"):
+            raise SystemExit("Non-loopback QWEN38_COMPAT_HOST requires an explicit non-default QWEN38_COMPAT_TOKEN.")
     except SystemExit as error:
         print(error, file=sys.stderr)
         sys.exit(1)

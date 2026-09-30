@@ -153,6 +153,125 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.installed.read_bytes(), original)
         self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
 
+    def test_non_loopback_requires_explicit_nondefault_token(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        for symlink in (False, True):
+            for host in ("0.0.0.0", "192.0.2.10", ""):
+                for token in (None, "ollama"):
+                    with self.subTest(symlink=symlink, host=host, token=token):
+                        if self.installed.exists() or self.installed.is_symlink():
+                            self.installed.unlink()
+                        if symlink:
+                            self.installed.symlink_to(target)
+                        else:
+                            self.installed.write_bytes(b"previous plist")
+                        self.capture.write_text("")
+                        self.env["QWEN38_COMPAT_HOST"] = host
+                        if token is None:
+                            self.env.pop("QWEN38_COMPAT_TOKEN", None)
+                        else:
+                            self.env["QWEN38_COMPAT_TOKEN"] = token
+                        result = self.run_script("start.sh")
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn("explicit non-default", result.stderr)
+                        self.assertEqual(self.installed.is_symlink(), symlink)
+                        self.assertEqual(self.installed.read_bytes(), b"previous plist")
+                        self.assertEqual(target.read_bytes(), b"previous plist")
+                        self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+                        self.assertEqual(list(self.installed.parent.glob(".launchd-*")), [])
+
+    def test_internal_cr_lf_tokens_are_rejected_before_compat_replacement(self):
+        import http.client
+
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        for symlink in (False, True):
+            for token in ("dummy\nwrapped", "dummy\rwrapped", "dummy\r\nwrapped"):
+                with self.subTest(symlink=symlink, token=token):
+                    # The real HTTP client rejects these values before connecting.
+                    connection = http.client.HTTPConnection("127.0.0.1", 9)
+                    connection.putrequest("GET", "/api/version")
+                    with self.assertRaises(ValueError):
+                        connection.putheader("x-api-key", token)
+                    connection.close()
+                    if self.installed.exists() or self.installed.is_symlink():
+                        self.installed.unlink()
+                    if symlink:
+                        self.installed.symlink_to(target)
+                    else:
+                        self.installed.write_bytes(b"previous plist")
+                    self.capture.write_text("")
+                    self.env["QWEN38_COMPAT_TOKEN"] = token
+                    result = self.run_script("start.sh")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CR or LF", result.stderr)
+                    self.assertNotIn("dummy", result.stderr)
+                    self.assertEqual(self.installed.is_symlink(), symlink)
+                    self.assertEqual(self.installed.read_bytes(), b"previous plist")
+                    self.assertEqual(target.read_bytes(), b"previous plist")
+                    self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+
+    def test_new_terminal_client_uses_installed_values_and_explicit_overrides(self):
+        for host, endpoint in (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")):
+            with self.subTest(host=host):
+                self.env.update({"QWEN38_COMPAT_HOST": host, "QWEN38_COMPAT_TOKEN": "dummy-persisted"})
+                self.start()
+                del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
+                client = self.run_script("claude-code.sh")
+                self.assertEqual(client.returncode, 0, client.stderr)
+                self.assertEqual(json.loads(client.stdout), {
+                    "base_url": f"http://{endpoint}:11440", "token": "dummy-persisted",
+                })
+                self.env.update({"QWEN38_COMPAT_HOST": "localhost", "QWEN38_COMPAT_TOKEN": ""})
+                client = self.run_script("claude-code.sh")
+                self.assertEqual(client.returncode, 0, client.stderr)
+                self.assertEqual(json.loads(client.stdout), {
+                    "base_url": "http://localhost:11440", "token": "",
+                })
+
+    def test_status_uses_effective_host_without_exposing_persisted_token(self):
+        self.write_command("launchctl", "#!/bin/zsh\nexit 0\n")
+        self.write_command(
+            "curl", f"#!{sys.executable}\nimport json, os, sys\n"
+            'with open(os.environ["TEST_CURL_CAPTURE"], "a") as handle:\n'
+            '    handle.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+            'url = sys.argv[-1]\n'
+            'if ":11440/" in url:\n'
+            '    if url != os.environ["TEST_COMPAT_URL"]: sys.exit(1)\n'
+            '    if "-H" in sys.argv and sys.argv[sys.argv.index("-H") + 1] != "x-api-key: dummy-status": sys.exit(1)\n'
+            'print(json.dumps({"version": "dummy-version", "models": []}))\n',
+        )
+        for host, endpoint in (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")):
+            self.env.update({"QWEN38_COMPAT_HOST": host, "QWEN38_COMPAT_TOKEN": "dummy-status"})
+            self.env["TEST_COMPAT_URL"] = f"http://{endpoint}:11440/api/version"
+            self.start()
+            del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
+            for override in (None, "localhost"):
+                with self.subTest(host=host, override=override):
+                    if override is not None:
+                        self.env["QWEN38_COMPAT_HOST"] = override
+                    effective = override or endpoint
+                    self.env["TEST_COMPAT_URL"] = f"http://{effective}:11440/api/version"
+                    result = self.run_script("status.sh")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    status = json.loads(result.stdout)
+                    self.assertEqual(status["claude_api"], f"http://{effective}:11440")
+                    self.assertTrue(status["claude_compat_running"])
+                    self.assertNotIn("dummy-status", result.stdout + result.stderr)
+
+    def test_malformed_installed_plist_fails_client_and_status(self):
+        self.installed.parent.mkdir(parents=True)
+        self.installed.write_bytes(b"invalid current plist")
+        for script in ("claude-code.sh", "status.sh"):
+            with self.subTest(script=script):
+                result = self.run_script(script)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("InvalidFileException", result.stderr)
+                self.assertEqual(result.stdout, "")
+
     def test_readiness_uses_configured_host_and_loopback_for_wildcard(self):
         for host, probe_host in (
             ("192.0.2.10", "192.0.2.10"), ("localhost", "localhost"),
@@ -275,6 +394,7 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.env.update({"QWEN38_COMPAT_HOST": "localhost", "QWEN38_COMPAT_TOKEN": "dummy-loopback"})
         self.start()
         self.env["TEST_COMPAT_PLIST"] = str(self.installed)
+        del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
         self.write_command("claude", f"#!{sys.executable}\n" + r'''import http.client
 import json
 import os
@@ -312,8 +432,9 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream, \
         thread.start()
     try:
         statuses = []
-        for expected, provided in ((client_token, client_token), (client_token, ""),
-                                   (" " + client_token + " ", client_token)):
+        configured_token = proxy.COMPAT_TOKEN
+        for expected, provided in ((configured_token, client_token), (configured_token, ""),
+                                   (" " + configured_token + " ", client_token)):
             proxy.COMPAT_TOKEN = expected
             connection = http.client.HTTPConnection(endpoint.hostname, compat.server_port, timeout=3)
             connection.request("GET", "/api/version", headers={"x-api-key": provided})
