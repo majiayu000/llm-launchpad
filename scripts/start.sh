@@ -74,7 +74,7 @@ fi
 reload_agent "$COMPAT_LABEL"
 
 for attempt in {1..30}; do
-  if curl -fsS http://127.0.0.1:11440/api/version >/dev/null 2>&1; then
+  if curl -fsS -H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}" http://127.0.0.1:11440/api/version >/dev/null 2>&1; then
     echo "Qwen3.8 Ollama 独立服务已启动：$version"
     echo "原生 API: http://127.0.0.1:11439"
     echo "Claude Code API: http://127.0.0.1:11440"

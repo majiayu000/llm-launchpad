@@ -79,7 +79,11 @@ echo "✔ 磁盘空闲 ${DISK_GB}GB（需要 ≥${NEED_DISK_GB}GB）"
 
 for port in 11439 11440; do
   if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1; then
-    curl -fsS --max-time 3 "http://127.0.0.1:$port/api/version" >/dev/null 2>&1 \
+    probe_headers=()
+    if [[ "$port" == 11440 ]]; then
+      probe_headers=(-H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}")
+    fi
+    curl -fsS --max-time 3 "${probe_headers[@]}" "http://127.0.0.1:$port/api/version" >/dev/null 2>&1 \
       || die "端口 $port 已被其他程序占用，请先处理后再安装"
   fi
 done
