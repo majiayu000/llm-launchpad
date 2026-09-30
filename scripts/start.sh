@@ -36,12 +36,41 @@ reload_agent() {
   if [[ -L "$installed_plist" ]]; then
     unlink "$installed_plist"
   fi
-  sed \
-    -e "s|__OLLAMA_BIN__|$OLLAMA_BIN|g" \
-    -e "s|__PYTHON_BIN__|$PYTHON_BIN|g" \
-    -e "s|__STATE_DIR__|$STATE_DIR|g" \
-    -e "s|__LOG_DIR__|$LOG_DIR|g" \
-    "$source_plist" > "$installed_plist"
+  "$PYTHON_BIN" - "$source_plist" "$installed_plist" "$PROJECT_ROOT" \
+    "$OLLAMA_BIN" "$PYTHON_BIN" "$STATE_DIR" "$LOG_DIR" <<'PY'
+import os
+import plistlib
+import sys
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+source, installed, project, ollama, python, state, logs = sys.argv[1:]
+template = Path(source).read_text(encoding="utf-8")
+for placeholder, value in (
+    ("__OLLAMA_BIN__", ollama), ("__PYTHON_BIN__", python),
+    ("__STATE_DIR__", state), ("__LOG_DIR__", logs),
+):
+    template = template.replace(placeholder, escape(value))
+settings = plistlib.loads(template.encode("utf-8"))
+if settings["Label"] == "com.local.qwen38-ollama-compat":
+    sys.path.insert(0, str(Path(project) / "compat"))
+    from anthropic_proxy import assert_listen_host_allowed
+
+    environment = settings["EnvironmentVariables"]
+    for name in ("QWEN38_COMPAT_TOKEN", "QWEN38_COMPAT_HOST"):
+        environment[name] = os.environ.get(name, environment[name])
+    if "QWEN38_METER_FILE" in os.environ:
+        environment["QWEN38_METER_FILE"] = os.environ["QWEN38_METER_FILE"]
+    try:
+        assert_listen_host_allowed(environment["QWEN38_COMPAT_HOST"], environment["QWEN38_COMPAT_TOKEN"])
+    except SystemExit as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
+
+with open(installed, "wb") as handle:
+    os.fchmod(handle.fileno(), 0o600)
+    plistlib.dump(settings, handle, sort_keys=False)
+PY
   if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
   fi
