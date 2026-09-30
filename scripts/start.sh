@@ -58,8 +58,14 @@ if settings["Label"] == "com.local.qwen38-ollama-compat":
     for name in ("QWEN38_COMPAT_TOKEN", "QWEN38_COMPAT_HOST"):
         environment[name] = os.environ.get(name, environment[name])
     if "QWEN38_METER_FILE" in os.environ:
-        environment["QWEN38_METER_FILE"] = os.environ["QWEN38_METER_FILE"]
+        meter_file = os.environ["QWEN38_METER_FILE"]
+        environment["QWEN38_METER_FILE"] = str(Path(settings["WorkingDirectory"]) / meter_file) if meter_file else ""
     try:
+        if ":" in environment["QWEN38_COMPAT_HOST"]:
+            raise SystemExit("IPv6 QWEN38_COMPAT_HOST is unsupported; use an IPv4 address or hostname.")
+        token = environment["QWEN38_COMPAT_TOKEN"]
+        if token != token.strip():
+            raise SystemExit("QWEN38_COMPAT_TOKEN must not contain leading or trailing whitespace.")
         assert_listen_host_allowed(environment["QWEN38_COMPAT_HOST"], environment["QWEN38_COMPAT_TOKEN"])
     except SystemExit as error:
         print(error, file=sys.stderr)

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -42,7 +43,8 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.write_command(
             "claude",
             f"#!{sys.executable}\nimport json, os\n"
-            'print(json.dumps({"token": os.environ["ANTHROPIC_AUTH_TOKEN"]}))\n',
+            'print(json.dumps({"token": os.environ["ANTHROPIC_AUTH_TOKEN"], '
+            '"base_url": os.environ["ANTHROPIC_BASE_URL"]}))\n',
         )
         self.env = os.environ.copy()
         for name in tuple(self.env):
@@ -63,9 +65,9 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         command.write_text(content)
         command.chmod(0o755)
 
-    def run_script(self, script):
+    def run_script(self, script, cwd=ROOT):
         return subprocess.run(
-            [str(ROOT / "scripts" / script)], cwd=ROOT, env=self.env,
+            [str(ROOT / "scripts" / script)], cwd=cwd, env=self.env,
             capture_output=True, text=True, timeout=15,
         )
 
@@ -167,6 +169,104 @@ class LaunchdEnvironmentTests(unittest.TestCase):
                 probes = [json.loads(line)[-1] for line in self.curl_capture.read_text().splitlines()]
                 compat_probes = [url for url in probes if ":11440/" in url]
                 self.assertEqual(compat_probes, [self.env["TEST_COMPAT_URL"]])
+                client = self.run_script("claude-code.sh")
+                self.assertEqual(client.returncode, 0, client.stderr)
+                self.assertEqual(json.loads(client.stdout)["base_url"], f"http://{probe_host}:11440")
+
+    def test_ipv6_is_rejected_before_replacing_or_bootstrapping_compat(self):
+        target = self.temp / "original.plist"
+        target.write_bytes(b"previous plist")
+        self.installed.parent.mkdir(parents=True)
+        self.installed.symlink_to(target)
+        for host in ("::1", "[::1]"):
+            with self.subTest(host=host):
+                # This is the server class used by the proxy, with its AF_INET default.
+                with self.assertRaises(OSError):
+                    ThreadingHTTPServer((host, 0), BaseHTTPRequestHandler)
+                self.capture.write_text("")
+                self.env["QWEN38_COMPAT_HOST"] = host
+                result = self.run_script("start.sh")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("IPv6", result.stderr)
+                self.assertTrue(self.installed.is_symlink())
+                self.assertEqual(target.read_bytes(), b"previous plist")
+                self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+
+    def test_padded_tokens_are_rejected_without_replacing_compat(self):
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-original"
+        self.start()
+        original = self.installed.read_bytes()
+        for token in (" dummy-padded ", "\tdummy-padded\n", "   "):
+            with self.subTest(token=token):
+                self.capture.write_text("")
+                self.env["QWEN38_COMPAT_TOKEN"] = token
+                result = self.run_script("start.sh")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("whitespace", result.stderr)
+                self.assertNotIn("dummy-padded", result.stderr)
+                self.assertEqual(self.installed.read_bytes(), original)
+                self.assertNotIn(COMPAT_LABEL, self.capture.read_text())
+
+    def test_launcher_reaches_real_loopback_proxy_and_auth_stays_enforced(self):
+        self.env.update({"QWEN38_COMPAT_HOST": "localhost", "QWEN38_COMPAT_TOKEN": "dummy-loopback"})
+        self.start()
+        self.env["TEST_COMPAT_PLIST"] = str(self.installed)
+        self.write_command("claude", f"#!{sys.executable}\n" + r'''import http.client
+import json
+import os
+import plistlib
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+with open(os.environ["TEST_COMPAT_PLIST"], "rb") as handle:
+    settings = plistlib.load(handle)
+client_token = os.environ["ANTHROPIC_AUTH_TOKEN"]
+endpoint = urlsplit(os.environ["ANTHROPIC_BASE_URL"])
+assert endpoint.hostname == "localhost", "launcher ignored configured host"
+os.environ.update(settings["EnvironmentVariables"])
+sys.path.insert(0, settings["WorkingDirectory"])
+import anthropic_proxy as proxy
+
+class Upstream(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"version":"dummy-version"}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+
+with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream, \
+     ThreadingHTTPServer((proxy.LISTEN_HOST, 0), proxy.CompatHandler) as compat:
+    proxy.UPSTREAM_HOST = "127.0.0.1"
+    proxy.UPSTREAM_PORT = upstream.server_port
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (upstream, compat)]
+    for thread in threads:
+        thread.start()
+    try:
+        statuses = []
+        for expected, provided in ((client_token, client_token), (client_token, ""),
+                                   (" " + client_token + " ", client_token)):
+            proxy.COMPAT_TOKEN = expected
+            connection = http.client.HTTPConnection(endpoint.hostname, compat.server_port, timeout=3)
+            connection.request("GET", "/api/version", headers={"x-api-key": provided})
+            response = connection.getresponse()
+            statuses.append(response.status)
+            response.read()
+            connection.close()
+        print(json.dumps(statuses))
+    finally:
+        for server in (compat, upstream):
+            server.shutdown()
+        for thread in threads:
+            thread.join()
+''')
+        client = self.run_script("claude-code.sh")
+        self.assertEqual(client.returncode, 0, client.stderr)
+        self.assertEqual(json.loads(client.stdout), [200, 401, 401])
 
     def test_rejected_config_preserves_installed_symlink_and_target(self):
         target = self.temp / "original.plist"
@@ -232,6 +332,32 @@ class LaunchdEnvironmentTests(unittest.TestCase):
             'exec(compile(sys.stdin.read(), "meter.sh", "exec"))\n',
         )
         return snapshot
+
+    def test_relative_meter_path_matches_proxy_from_another_directory(self):
+        self.env["QWEN38_METER_FILE"] = "meter.json"
+        settings = self.start()
+        working_dir = Path(settings["WorkingDirectory"])
+        # The installed proxy's real meter writes from the launchd working directory.
+        published = subprocess.run(
+            [sys.executable, "-c", r'''from meter import TurnMeter
+m = TurnMeter()
+m.feed(b'data: {"type":"content_block_delta"}\n')
+m.feed(b'data: {"type":"message_delta","usage":{"output_tokens":7}}\n')
+m.finish()
+'''],
+            cwd=working_dir, env={"HOME": self.env["HOME"], **settings["EnvironmentVariables"]},
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.prepare_meter()
+        caller_dir = self.temp / "caller"
+        caller_dir.mkdir()
+        result = self.run_script("meter.sh", cwd=caller_dir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("7 tok", result.stdout)
+        self.assertNotIn("暂无数据", result.stderr)
+        self.assertEqual(settings["EnvironmentVariables"]["QWEN38_METER_FILE"], str(working_dir / "meter.json"))
+        self.assertFalse((caller_dir / "meter.json").exists())
 
     def test_empty_meter_does_not_display_stale_default_snapshot(self):
         self.prepare_meter()

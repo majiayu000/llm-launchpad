@@ -10,6 +10,10 @@ if [[ -z "$METER_FILE" ]]; then
   exit 0
 fi
 
+if [[ "$METER_FILE" != /* ]]; then
+  METER_FILE="$HOME/.local/share/qwen38-ollama/compat/$METER_FILE"
+fi
+
 if [[ ! -f "$METER_FILE" ]]; then
   echo "暂无数据（状态文件 $METER_FILE 还没生成，先在别的窗口跑一次 ./scripts/claude-code.sh）" >&2
 fi

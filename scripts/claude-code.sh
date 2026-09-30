@@ -12,7 +12,11 @@ mkdir -p "$CLAUDE_STATE_DIR"
 # Claude Code 2.1.233 会从 ~/.claude/settings.json 重新注入 env。
 # 使用独立配置目录，避免全局智谱/Anthropic配置覆盖本地 Ollama。
 export CLAUDE_CONFIG_DIR="$CLAUDE_STATE_DIR"
-export ANTHROPIC_BASE_URL="http://127.0.0.1:11440"
+COMPAT_HOST="${QWEN38_COMPAT_HOST-127.0.0.1}"
+if [[ -z "$COMPAT_HOST" || "$COMPAT_HOST" == "0.0.0.0" ]]; then
+  COMPAT_HOST="127.0.0.1"
+fi
+export ANTHROPIC_BASE_URL="http://$COMPAT_HOST:11440"
 # Must match the compat proxy shared secret (QWEN38_COMPAT_TOKEN, default ollama).
 export ANTHROPIC_AUTH_TOKEN="${QWEN38_COMPAT_TOKEN:-ollama}"
 export ANTHROPIC_API_KEY=""

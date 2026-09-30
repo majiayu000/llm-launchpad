@@ -74,6 +74,8 @@ print(response.choices[0].message.content)
 
 Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 会读取同一环境变量。
 
+`QWEN38_COMPAT_HOST` 可设为 IPv4 地址或主机名，Claude Code 入口会使用同一地址；通配监听地址使用回环连接。安装时拒绝 IPv6 地址和首尾含空白的 token。
+
 ```bash
 curl http://127.0.0.1:11440/v1/messages \
   -H 'Content-Type: application/json' \
@@ -116,6 +118,8 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 ```
 
 速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
+
+`QWEN38_METER_FILE` 的相对路径统一以 `~/.local/share/qwen38-ollama/compat` 为基准，与启动命令所在目录无关。
 
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
 
