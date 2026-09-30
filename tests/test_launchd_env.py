@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,7 +98,7 @@ class LaunchdEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def prepare_real_probes(self, host="127.0.0.1", token="dummy-probe"):
+    def prepare_real_probes(self, host="127.0.0.1", token="dummy-probe", compat_handler=None):
         sys.path.insert(0, str(ROOT / "compat"))
         import anthropic_proxy
 
@@ -121,7 +122,7 @@ class LaunchdEnvironmentTests(unittest.TestCase):
                 pass
 
         servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler)
-                   for handler in (Upstream, anthropic_proxy.CompatHandler)]
+                   for handler in (Upstream, compat_handler or anthropic_proxy.CompatHandler)]
         settings = patch.multiple(anthropic_proxy, UPSTREAM_HOST="127.0.0.1",
                                   UPSTREAM_PORT=servers[0].server_port, COMPAT_TOKEN=token)
         settings.start()
@@ -151,6 +152,7 @@ for index, arg in enumerate(args):
         sys.exit(1)
 os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
 ''')
+        return servers
 
     def test_readiness_authenticates_real_proxy_at_configured_endpoint(self):
         self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe"})
@@ -174,7 +176,7 @@ os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(json.loads(result.stdout)["claude_compat_running"])
 
-    def test_repeat_install_probes_persisted_concrete_host_and_explicit_overrides(self):
+    def test_repeat_install_probes_persisted_host_before_explicit_overrides(self):
         self.env.update({"QWEN38_COMPAT_HOST": "192.0.2.10", "QWEN38_COMPAT_TOKEN": "dummy-probe"})
         self.start()
         del self.env["QWEN38_COMPAT_HOST"], self.env["QWEN38_COMPAT_TOKEN"]
@@ -187,8 +189,6 @@ os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
             with self.subTest(host=host):
                 if host is not None:
                     self.env["QWEN38_COMPAT_HOST"] = host
-                    effective_host = host if host and host != "0.0.0.0" else "127.0.0.1"
-                    self.env["TEST_COMPAT_URL"] = f"http://{effective_host}:11440/api/version"
                 result = subprocess.run([str(ROOT / "install.sh"), "--check"], cwd=ROOT,
                                         env=self.env, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -201,11 +201,138 @@ os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("安装完成", result.stdout)
         self.assertNotIn("dummy-probe", result.stdout + result.stderr)
-        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-wrong"
+        self.env["QWEN38_COMPAT_TOKEN"] = "dummy-rotated"
+        result = subprocess.run([str(ROOT / "install.sh"), "--check"], cwd=ROOT,
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = plistlib.loads(self.installed.read_bytes())
+        settings["EnvironmentVariables"]["QWEN38_COMPAT_TOKEN"] = "dummy-wrong"
+        self.installed.write_bytes(plistlib.dumps(settings))
         result = subprocess.run([str(ROOT / "install.sh"), "--check"], cwd=ROOT,
                                 env=self.env, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 1)
         self.assertIn("端口 11440 已被其他程序占用", result.stderr)
+
+    def test_repeat_install_rotates_running_token_and_host_after_preflight(self):
+        sys.path.insert(0, str(ROOT / "compat"))
+        import anthropic_proxy
+
+        phase = self.temp / "compat-bootstrapped"
+        installed = self.installed
+
+        class ReloadedCompat(anthropic_proxy.CompatHandler):
+            def do_GET(handler):
+                token = self.env["TEST_OLD_TOKEN"]
+                if phase.exists():
+                    token = plistlib.loads(installed.read_bytes())["EnvironmentVariables"]["QWEN38_COMPAT_TOKEN"]
+                with patch.object(anthropic_proxy, "COMPAT_TOKEN", token):
+                    super().do_GET()
+
+        for old_host, old_token, new_host, new_token in (
+            ("127.0.0.1", "dummy-old", "127.0.0.1", "dummy-new"),
+            ("127.0.0.1", "dummy-old", "127.0.0.1", ""),
+            ("127.0.0.1", "", "localhost", "dummy-new"),
+            ("0.0.0.0", "dummy-old", "192.0.2.10", "dummy-new"),
+            ("192.0.2.10", "dummy-old", "", "dummy-new"),
+        ):
+            with self.subTest(old_host=old_host, old_token=old_token, new_host=new_host, new_token=new_token):
+                phase.unlink(missing_ok=True)
+                self.write_command("launchctl", "#!/bin/zsh\nexit 0\n")
+                self.write_command("curl", "#!/bin/zsh\necho '{\"version\":\"dummy-version\"}'\n")
+                self.env.update({"QWEN38_COMPAT_HOST": old_host, "QWEN38_COMPAT_TOKEN": old_token})
+                self.start()
+                old_endpoint = old_host if old_host and old_host != "0.0.0.0" else "127.0.0.1"
+                new_endpoint = new_host if new_host and new_host != "0.0.0.0" else "127.0.0.1"
+                self.prepare_real_probes(host=old_endpoint, token=old_token, compat_handler=ReloadedCompat)
+                self.env.update({
+                    "QWEN38_COMPAT_HOST": new_host, "QWEN38_COMPAT_TOKEN": new_token,
+                    "QWEN38_SIM_FRESH": "1", "TEST_OLD_TOKEN": old_token,
+                    "TEST_NEW_COMPAT_URL": f"http://{new_endpoint}:11440/api/version",
+                    "TEST_BOOTSTRAPPED": str(phase),
+                })
+                self.write_command("uname", '#!/bin/zsh\n[[ "$1" == -s ]] && echo Darwin || echo arm64\n')
+                self.write_command("sysctl", "#!/bin/zsh\necho 34359738368\n")
+                self.write_command("df", "#!/bin/zsh\nprintf 'Filesystem Blocks Used Available\nfixture 0 0 104857600\n'\n")
+                self.write_command("lsof", "#!/bin/zsh\nexit 0\n")
+                self.write_command("launchctl", '#!/bin/zsh\n'
+                                   'if [[ "$1" == bootstrap && "$3" == *qwen38-ollama-compat.plist ]]; then\n'
+                                   '  touch "$TEST_BOOTSTRAPPED"\n'
+                                   'fi\nexit 0\n')
+                self.curl_capture.write_text("")
+                self.write_command("curl", f"#!{sys.executable}\n" + r'''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["TEST_CURL_CAPTURE"], "a") as handle:
+    handle.write(json.dumps(args) + "\n")
+expected = os.environ["TEST_NEW_COMPAT_URL"] if Path(os.environ["TEST_BOOTSTRAPPED"]).exists() else os.environ["TEST_COMPAT_URL"]
+for index, arg in enumerate(args):
+    if arg.startswith("http://127.0.0.1:11439/"):
+        args[index] = arg.replace("http://127.0.0.1:11439", os.environ["TEST_OLLAMA_URL"])
+    elif arg == expected:
+        args[index] = os.environ["TEST_REAL_COMPAT_URL"] + "/api/version"
+    elif arg.startswith("http://"):
+        sys.exit(1)
+os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
+''')
+                result = subprocess.run([str(ROOT / "install.sh")], cwd=ROOT,
+                                        env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("安装完成", result.stdout)
+                current = plistlib.loads(self.installed.read_bytes())["EnvironmentVariables"]
+                self.assertEqual(current["QWEN38_COMPAT_HOST"], new_host)
+                self.assertEqual(current["QWEN38_COMPAT_TOKEN"], new_token)
+                probes = [json.loads(line) for line in self.curl_capture.read_text().splitlines()]
+                compat_probes = [args for args in probes if any(":11440/" in arg for arg in args)]
+                self.assertEqual([(args[-1], args[args.index("-H") + 1]) for args in compat_probes], [
+                    (f"http://{old_endpoint}:11440/api/version", f"x-api-key: {old_token}"),
+                    (f"http://{new_endpoint}:11440/api/version", f"x-api-key: {new_token}"),
+                ])
+                self.assertNotIn("dummy-old", result.stdout + result.stderr)
+                self.assertNotIn("dummy-new", result.stdout + result.stderr)
+
+    def test_stalled_status_probe_returns_false_within_deadline(self):
+        class StalledCompat(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                handler.server.requests.append(handler.path)
+                handler.server.release.wait(8)
+
+            def log_message(handler, *args):
+                pass
+
+        _, server = self.prepare_real_probes(compat_handler=StalledCompat)
+        server.requests = []
+        server.release = threading.Event()
+        self.addCleanup(server.release.set)
+        self.write_command("launchctl", "#!/bin/zsh\nexit 0\n")
+        started = time.monotonic()
+        result = self.run_script("status.sh")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["claude_compat_running"])
+        self.assertLess(elapsed, 4)
+        self.assertEqual(server.requests, ["/api/version"])
+
+    def test_stalled_readiness_probes_exhaust_with_failure(self):
+        class StalledCompat(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                handler.server.requests.append(handler.path)
+                handler.server.release.wait(45)
+
+            def log_message(handler, *args):
+                pass
+
+        _, server = self.prepare_real_probes(compat_handler=StalledCompat)
+        server.requests = []
+        server.release = threading.Event()
+        self.addCleanup(server.release.set)
+        started = time.monotonic()
+        result = subprocess.run([str(ROOT / "scripts/start.sh")], cwd=ROOT, env=self.env,
+                                capture_output=True, text=True, timeout=40)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Claude 兼容入口启动超时", result.stderr)
+        self.assertLess(elapsed, 38)
+        self.assertEqual(len(server.requests), 30)
 
     def test_header_unsafe_tokens_preserve_installed_files_and_symlinks(self):
         target = self.temp / "original.plist"

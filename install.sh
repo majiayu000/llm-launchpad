@@ -89,10 +89,14 @@ import sys
 from pathlib import Path
 
 installed = Path(sys.argv[1])
-environment = {"QWEN38_COMPAT_HOST": "127.0.0.1", "QWEN38_COMPAT_TOKEN": "ollama"}
+environment = {
+    "QWEN38_COMPAT_HOST": os.environ.get("QWEN38_COMPAT_HOST", "127.0.0.1"),
+    "QWEN38_COMPAT_TOKEN": os.environ.get("QWEN38_COMPAT_TOKEN", "ollama"),
+}
 if installed.exists():
+    # Identify the current listener before start.sh applies the requested overrides.
     environment = plistlib.loads(installed.read_bytes())["EnvironmentVariables"]
-sys.stdout.write("\0".join(os.environ.get(name, environment[name]) for name in (
+sys.stdout.write("\0".join(environment[name] for name in (
     "QWEN38_COMPAT_HOST", "QWEN38_COMPAT_TOKEN",
 )))
 PY
