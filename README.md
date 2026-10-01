@@ -2,7 +2,7 @@
 
 在你的 Apple Silicon Mac 上一条命令跑起 Qwen3.8-27B，提供 OpenAI 兼容 API，并可直接作为 Claude Code 或 Codex CLI 的后端模型。默认只监听 `127.0.0.1`，模型推理在本机完成；首次安装需要联网下载运行时和模型。
 
-[硬件要求](#硬件要求) · [安装与预检](#一键安装) · [Claude Code、Codex 和 API 用法](#四种使用方式) · [服务管理](#管理) · [已知限制](#已知限制)
+[硬件要求](#硬件要求) · [安装与预检](#一键安装) · [Claude Code、Codex 和 API 用法](#四种使用方式) · [服务管理](#管理) · [本地入口排障](#本地入口排障先分清模型服务与兼容层) · [已知限制](#已知限制)
 
 ## 硬件要求
 
@@ -120,6 +120,40 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
 
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
+
+## 本地入口排障：先分清模型服务与兼容层
+
+从仓库目录运行 `./scripts/status.sh`，按输出定位问题。这个命令读取本地服务状态，不会发起模型生成；如果 `11439` 不可达，会输出 `running:false` 并以非零状态退出。
+
+| 状态或症状 | 含义与下一步 |
+|---|---|
+| `running:false` | 独立 Ollama 实例不可达。安装完成后先运行 `./scripts/start.sh`，再查 `~/Library/Logs/Qwen3.8-Ollama/`。不要把默认 Ollama 的 `11434` 当作这里的 `11439`。 |
+| `running:true`、`installed:false` | 当前 `QWEN38_MODEL` 未出现在这个实例的模型列表中。运行 `./scripts/pull.sh`；自定义模型时，下载、状态查询和客户端入口都使用同一个 `QWEN38_MODEL`。 |
+| `installed:true`、`loaded:false` | 模型已下载但当前不在加载列表里。这与“未安装”不同；首次实际请求可能需要加载时间。 |
+| Codex / SDK 可用，Claude Code 不可用 | 前者直连 `11439`，后者经过 `11440`。查看兼容层日志，并用下面带鉴权的健康查询核实；`status.sh` 的兼容层探测不带密钥，`claude_compat_running:false` 不能单独证明兼容层未启动。 |
+| Claude Code 或 `/v1/messages` 返回 401 | 请求密钥与兼容层的 `QWEN38_COMPAT_TOKEN` 不一致。客户端与服务端须使用相同配置；兼容层所有代理请求都要鉴权，包括 `/api/version`。 |
+| `claude` 或 `codex` 命令找不到 | 启动脚本调用已有的客户端。先安装对应 CLI，并确认它能被当前终端找到；模型安装成功不代表客户端已安装。 |
+
+核实兼容层是否可达时，带上与服务端一致的密钥（以下使用入口脚本相同的默认值）：
+
+```bash
+curl -fsS http://127.0.0.1:11440/api/version \
+  -H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}"
+```
+
+如果选择自定义模型，可以先查询它在独立实例中的状态：
+
+```bash
+QWEN38_MODEL=your-installed-model ./scripts/status.sh
+```
+
+确认已下载后，以相同模型名运行对应的客户端入口。请求延迟需要在实际机器上测量，下面的速度与首轮等待示例不能作为每台机器的保证。
+
+### 与直接使用 Ollama 有什么区别？
+
+这里的 LLM Launchpad 是 macOS 安装和启动脚本仓库，使用独立端口、模型目录、launchd 服务与客户端配置目录。它与 [PyPI 上同名的 llm-launchpad](https://pypi.org/project/llm-launchpad/) 是不同项目，不要用 `pip install llm-launchpad` 安装本仓库。
+
+如果已经有合适的 Ollama 服务和模型，可以先看 Ollama 官方的 [Claude Code 接入](https://docs.ollama.com/integrations/claude-code)与 [Codex 接入](https://docs.ollama.com/integrations/codex)。本仓库的具体端口、兼容层与隔离目录以上面的架构和脚本为准；两套配置不要混用。
 
 ## 常见问题
 
