@@ -37,6 +37,7 @@ class ManagementProbeTests(unittest.TestCase):
         self.temp = Path(temp_dir.name)
         self.bin_dir = self.temp / "bin"
         self.bin_dir.mkdir()
+        self.curl_capture = self.temp / "curl.jsonl"
         self.ollama = self.serve(FakeOllamaHandler)
         self.ollama.requests = []
         settings = patch.multiple(
@@ -50,9 +51,11 @@ class ManagementProbeTests(unittest.TestCase):
         self.write_command(
             "curl",
             f"#!{sys.executable}\n"
-            "import os, sys\n"
+            "import json, os, sys\n"
             "args = [arg.replace('http://127.0.0.1:11439', os.environ['TEST_OLLAMA_URL'])"
             ".replace('http://127.0.0.1:11440', os.environ['TEST_COMPAT_URL']) for arg in sys.argv[1:]]\n"
+            'with open(os.environ["TEST_CURL_CAPTURE"], "a") as handle:\n'
+            '    handle.write(json.dumps({"pid": os.getpid(), "args": args}) + "\\n")\n'
             "os.execv(os.environ['TEST_CURL'], [os.environ['TEST_CURL'], *args])\n",
         )
         self.write_command("launchctl", "#!/bin/zsh\nexit 0\n")
@@ -73,6 +76,7 @@ class ManagementProbeTests(unittest.TestCase):
             "QWEN38_SIM_DISK_GB": "100",
             "QWEN38_SIM_FRESH": "1",
             "TEST_CURL": shutil.which("curl"),
+            "TEST_CURL_CAPTURE": str(self.curl_capture),
             "TEST_OLLAMA_URL": f"http://127.0.0.1:{self.ollama.server_port}",
             "TEST_COMPAT_URL": f"http://127.0.0.1:{self.compat.server_port}",
         })
@@ -144,6 +148,41 @@ class ManagementProbeTests(unittest.TestCase):
             install = self.run_script("install.sh", "--check")
             self.assertEqual(install.returncode, 1)
             self.assertIn("端口 11440 已被其他程序占用", install.stderr)
+
+    def test_compat_token_stays_out_of_curl_process_arguments(self):
+        token = 'dummy "quoted" \\ token: @- %;=$()'
+        self.env["QWEN38_COMPAT_TOKEN"] = token
+        observed = []
+        capture = self.curl_capture
+
+        class InspectCompat(anthropic_proxy.CompatHandler):
+            def do_GET(handler):
+                probe = json.loads(capture.read_text().splitlines()[-1])
+                process = subprocess.run(
+                    ["ps", "-o", "args=", "-p", str(probe["pid"])],
+                    capture_output=True, text=True, check=True, timeout=5,
+                )
+                observed.append((probe["args"], process.stdout))
+                super().do_GET()
+
+        self.compat.RequestHandlerClass = InspectCompat
+        with patch.object(anthropic_proxy, "COMPAT_TOKEN", token):
+            for script, args in (("scripts/start.sh", ()), ("scripts/status.sh", ()),
+                                 ("install.sh", ("--check",))):
+                with self.subTest(script=script):
+                    observed.clear()
+                    result = self.run_script(script, *args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if script == "scripts/status.sh":
+                        self.assertTrue(json.loads(result.stdout)["claude_compat_running"])
+                    self.assertEqual(len(observed), 1)
+                    arguments, process_arguments = observed[0]
+                    self.assertIn(self.env["TEST_CURL"], process_arguments)
+                    self.assertIn(self.env["TEST_COMPAT_URL"], process_arguments)
+                    self.assertNotIn(token, " ".join(arguments))
+                    self.assertNotIn(token, process_arguments)
+                    self.assertNotIn(token, result.stdout + result.stderr)
+        self.assertTrue(all("x-api-key" not in headers for _, headers in self.ollama.requests))
 
     def test_version_endpoint_still_rejects_unauthenticated_requests(self):
         with patch.object(anthropic_proxy, "COMPAT_TOKEN", "dummy-test-token"):

@@ -122,7 +122,7 @@ if [[ -z "$COMPAT_PROBE_HOST" || "$COMPAT_PROBE_HOST" == "0.0.0.0" ]]; then
 fi
 
 for attempt in {1..30}; do
-  if curl -fsS --max-time 1 -H "x-api-key: ${QWEN38_COMPAT_TOKEN-ollama}" "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
+  if printf 'x-api-key: %s\n' "${QWEN38_COMPAT_TOKEN-ollama}" | curl -fsS --max-time 1 -H @- "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
     echo "Qwen3.8 Ollama 独立服务已启动：$version"
     echo "原生 API: http://127.0.0.1:11439"
     echo "Claude Code API: http://$COMPAT_PROBE_HOST:11440"

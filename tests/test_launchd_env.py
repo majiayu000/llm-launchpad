@@ -284,8 +284,8 @@ os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
                 probes = [json.loads(line) for line in self.curl_capture.read_text().splitlines()]
                 compat_probes = [args for args in probes if any(":11440/" in arg for arg in args)]
                 self.assertEqual([(args[-1], args[args.index("-H") + 1]) for args in compat_probes], [
-                    (f"http://{old_endpoint}:11440/api/version", f"x-api-key: {old_token}"),
-                    (f"http://{new_endpoint}:11440/api/version", f"x-api-key: {new_token}"),
+                    (f"http://{old_endpoint}:11440/api/version", "@-"),
+                    (f"http://{new_endpoint}:11440/api/version", "@-"),
                 ])
                 self.assertNotIn("dummy-old", result.stdout + result.stderr)
                 self.assertNotIn("dummy-new", result.stdout + result.stderr)
@@ -526,7 +526,7 @@ os.execv(os.environ["TEST_REAL_CURL"], [os.environ["TEST_REAL_CURL"], *args])
             'url = sys.argv[-1]\n'
             'if ":11440/" in url:\n'
             '    if url != os.environ["TEST_COMPAT_URL"]: sys.exit(1)\n'
-            '    if "-H" in sys.argv and sys.argv[sys.argv.index("-H") + 1] != "x-api-key: dummy-status": sys.exit(1)\n'
+            '    if sys.stdin.read() != "x-api-key: dummy-status\\n": sys.exit(1)\n'
             'print(json.dumps({"version": "dummy-version", "models": []}))\n',
         )
         for host, endpoint in (("192.0.2.10", "192.0.2.10"), ("0.0.0.0", "127.0.0.1")):
