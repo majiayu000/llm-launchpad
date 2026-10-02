@@ -80,10 +80,36 @@ echo "✔ 磁盘空闲 ${DISK_GB}GB（需要 ≥${NEED_DISK_GB}GB）"
 for port in 11439 11440; do
   if lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null 2>&1; then
     probe_headers=()
+    probe_header=""
+    probe_host="127.0.0.1"
     if [[ "$port" == 11440 ]]; then
-      probe_headers=(-H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}")
+      COMPAT_SETTINGS=("${(@0)$(python3 - "$HOME/Library/LaunchAgents/com.local.qwen38-ollama-compat.plist" <<'PY'
+import os
+import plistlib
+import sys
+from pathlib import Path
+
+installed = Path(sys.argv[1])
+environment = {
+    "QWEN38_COMPAT_HOST": os.environ.get("QWEN38_COMPAT_HOST", "127.0.0.1"),
+    "QWEN38_COMPAT_TOKEN": os.environ.get("QWEN38_COMPAT_TOKEN", "ollama"),
+}
+if installed.exists():
+    # Identify the current listener before start.sh applies the requested overrides.
+    environment = plistlib.loads(installed.read_bytes())["EnvironmentVariables"]
+sys.stdout.write("\0".join(environment[name] for name in (
+    "QWEN38_COMPAT_HOST", "QWEN38_COMPAT_TOKEN",
+)))
+PY
+)}")
+      probe_host="${COMPAT_SETTINGS[1]}"
+      if [[ -z "$probe_host" || "$probe_host" == "0.0.0.0" ]]; then
+        probe_host="127.0.0.1"
+      fi
+      probe_headers=(-H @-)
+      probe_header="x-api-key: ${COMPAT_SETTINGS[2]}"
     fi
-    curl -fsS --max-time 3 "${probe_headers[@]}" "http://127.0.0.1:$port/api/version" >/dev/null 2>&1 \
+    printf '%s\n' "$probe_header" | curl -fsS --max-time 3 "${probe_headers[@]}" "http://$probe_host:$port/api/version" >/dev/null 2>&1 \
       || die "端口 $port 已被其他程序占用，请先处理后再安装"
   fi
 done
@@ -154,11 +180,17 @@ PY
 echo "模型回复：$REPLY"
 
 # ---------- 6. 完成 ----------
+COMPAT_BIND_HOST="${QWEN38_COMPAT_HOST-127.0.0.1}"
+COMPAT_CLIENT_HOST="$COMPAT_BIND_HOST"
+if [[ -z "$COMPAT_BIND_HOST" || "$COMPAT_BIND_HOST" == "0.0.0.0" ]]; then
+  COMPAT_BIND_HOST="0.0.0.0"
+  COMPAT_CLIENT_HOST="127.0.0.1"
+fi
 say "安装完成"
 cat <<EOF
-本机服务（只监听 127.0.0.1，不暴露局域网）：
-  OpenAI 兼容 API    $API/v1
-  Anthropic 兼容 API  http://127.0.0.1:11440（供 Claude Code 使用）
+服务入口：
+  OpenAI 兼容 API    $API/v1（监听 127.0.0.1）
+  Anthropic 兼容 API  http://$COMPAT_CLIENT_HOST:11440（监听 $COMPAT_BIND_HOST，供 Claude Code 使用）
 
 四种使用方式：
   1. 命令行对话     ./scripts/chat.sh '你好'

@@ -33,15 +33,58 @@ reload_agent() {
   local source_plist="$PROJECT_ROOT/launchd/$label.plist"
   local installed_plist="$HOME/Library/LaunchAgents/$label.plist"
 
-  if [[ -L "$installed_plist" ]]; then
-    unlink "$installed_plist"
-  fi
-  sed \
-    -e "s|__OLLAMA_BIN__|$OLLAMA_BIN|g" \
-    -e "s|__PYTHON_BIN__|$PYTHON_BIN|g" \
-    -e "s|__STATE_DIR__|$STATE_DIR|g" \
-    -e "s|__LOG_DIR__|$LOG_DIR|g" \
-    "$source_plist" > "$installed_plist"
+  "$PYTHON_BIN" - "$source_plist" "$installed_plist" "$PROJECT_ROOT" \
+    "$OLLAMA_BIN" "$PYTHON_BIN" "$STATE_DIR" "$LOG_DIR" <<'PY'
+import os
+import plistlib
+import sys
+import tempfile
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+source, installed, project, ollama, python, state, logs = sys.argv[1:]
+template = Path(source).read_text(encoding="utf-8")
+for placeholder, value in (
+    ("__OLLAMA_BIN__", ollama), ("__PYTHON_BIN__", python),
+    ("__STATE_DIR__", state), ("__LOG_DIR__", logs),
+):
+    template = template.replace(placeholder, escape(value))
+settings = plistlib.loads(template.encode("utf-8"))
+if settings["Label"] == "com.local.qwen38-ollama-compat":
+    sys.path.insert(0, str(Path(project) / "compat"))
+    from anthropic_proxy import assert_listen_host_allowed, is_loopback_host
+
+    environment = settings["EnvironmentVariables"]
+    for name in ("QWEN38_COMPAT_TOKEN", "QWEN38_COMPAT_HOST"):
+        environment[name] = os.environ.get(name, environment[name])
+    if "QWEN38_METER_FILE" in os.environ:
+        meter_file = os.environ["QWEN38_METER_FILE"]
+        environment["QWEN38_METER_FILE"] = str(Path(settings["WorkingDirectory"]) / meter_file) if meter_file else ""
+    try:
+        host = environment["QWEN38_COMPAT_HOST"]
+        if host != host.strip():
+            raise SystemExit("QWEN38_COMPAT_HOST must not contain leading or trailing whitespace.")
+        if ":" in environment["QWEN38_COMPAT_HOST"]:
+            raise SystemExit("IPv6 QWEN38_COMPAT_HOST is unsupported; use an IPv4 address or hostname.")
+        token = environment["QWEN38_COMPAT_TOKEN"]
+        if token != token.strip():
+            raise SystemExit("QWEN38_COMPAT_TOKEN must not contain leading or trailing whitespace.")
+        if any(ord(character) < 32 or ord(character) > 126 for character in token):
+            raise SystemExit("QWEN38_COMPAT_TOKEN must contain only printable ASCII HTTP header characters (no controls, CR or LF).")
+        assert_listen_host_allowed(environment["QWEN38_COMPAT_HOST"], environment["QWEN38_COMPAT_TOKEN"])
+        if not is_loopback_host(host) and ("QWEN38_COMPAT_TOKEN" not in os.environ or token == "ollama"):
+            raise SystemExit("Non-loopback QWEN38_COMPAT_HOST requires an explicit non-default QWEN38_COMPAT_TOKEN.")
+    except SystemExit as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
+
+with tempfile.TemporaryDirectory(prefix=".launchd-", dir=Path(installed).parent) as staging:
+    rendered = Path(staging) / "agent.plist"
+    with rendered.open("wb") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        plistlib.dump(settings, handle, sort_keys=False)
+    os.replace(rendered, installed)
+PY
   if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
   fi
@@ -73,11 +116,16 @@ fi
 
 reload_agent "$COMPAT_LABEL"
 
+COMPAT_PROBE_HOST="${QWEN38_COMPAT_HOST-127.0.0.1}"
+if [[ -z "$COMPAT_PROBE_HOST" || "$COMPAT_PROBE_HOST" == "0.0.0.0" ]]; then
+  COMPAT_PROBE_HOST="127.0.0.1"
+fi
+
 for attempt in {1..30}; do
-  if curl -fsS -H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}" http://127.0.0.1:11440/api/version >/dev/null 2>&1; then
+  if printf 'x-api-key: %s\n' "${QWEN38_COMPAT_TOKEN-ollama}" | curl -fsS --max-time 1 -H @- "http://$COMPAT_PROBE_HOST:11440/api/version" >/dev/null 2>&1; then
     echo "Qwen3.8 Ollama 独立服务已启动：$version"
     echo "原生 API: http://127.0.0.1:11439"
-    echo "Claude Code API: http://127.0.0.1:11440"
+    echo "Claude Code API: http://$COMPAT_PROBE_HOST:11440"
     exit 0
   fi
   sleep 1

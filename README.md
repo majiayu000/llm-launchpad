@@ -74,7 +74,9 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-Anthropic Messages 兼容入口在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 会读取同一环境变量。
+Anthropic Messages 兼容入口默认在 `http://127.0.0.1:11440`。请求必须带与 `QWEN38_COMPAT_TOKEN`（默认 `ollama`）一致的 `x-api-key` 或 `Authorization: Bearer`；缺失或不匹配返回 401。`scripts/claude-code.sh` 和 `scripts/status.sh` 读取已安装 launchd plist 中的监听地址和 token，显式设置的环境变量优先；新终端无需重复导出安装时的配置。
+
+`QWEN38_COMPAT_HOST` 可设为 IPv4 地址或主机名，Claude Code 入口会使用同一地址；通配监听地址使用回环连接。安装时拒绝 IPv6 地址、首尾含空白的监听地址或 token；token 仅接受可打印 ASCII 字符。非回环监听必须显式设置非空且不同于公开默认值 `ollama` 的 `QWEN38_COMPAT_TOKEN`。
 
 ```bash
 curl http://127.0.0.1:11440/v1/messages \
@@ -119,6 +121,8 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 
 速度计由兼容层驱动：它统计流经 `11440` 的生成 token 并发布实时快照（默认写 `/tmp/qwen38-ollama-meter.json`，设 `QWEN38_METER_FILE=""` 可关闭）。适合录屏演示或观察真实吞吐。
 
+`QWEN38_METER_FILE` 的相对路径统一以 `~/.local/share/qwen38-ollama/compat` 为基准，与启动命令所在目录无关。速度计读取已安装 plist 中的路径（包括空值），显式环境变量优先。
+
 日志在 `~/Library/Logs/Qwen3.8-Ollama/`。
 
 ## 本地入口排障：先分清模型服务与兼容层
@@ -160,7 +164,7 @@ QWEN38_MODEL=your-installed-model ./scripts/status.sh
 - **新开对话的第一轮要等 2~3 分钟？** 默认的 MLX 引擎生成快（约 16 token/s）但预填充较慢，Claude Code 首轮约 1.8 万 token 的系统提示需要时间处理；同一对话从第二轮起命中前缀缓存，会明显变快。更看重首轮响应速度可换回 GGUF 版（约 8 token/s）：`QWEN38_MODEL=qwen3.8:27b ./scripts/pull.sh` 下载后，各脚本同样加 `QWEN38_MODEL=qwen3.8:27b` 运行即可。
 - **生成速度只有 8~16 token/s？** 27B 量化模型在 Apple Silicon 上的正常水平（受内存带宽限制），不是软件问题。想更快就换更小的模型。
 - **Claude Code 第二轮开始明显变快？** 前缀缓存命中了；这是兼容层缩略规则设计的直接目的。
-- **局域网其他设备能访问吗？** 默认不能：只监听回环地址。若把 `QWEN38_COMPAT_HOST` 改成非回环地址，必须配置非空的 `QWEN38_COMPAT_TOKEN`，否则兼容层会拒绝启动；即便能启动，未带匹配密钥的请求也会 401。
+- **局域网其他设备能访问吗？** 默认不能：只监听回环地址。若安装时把 `QWEN38_COMPAT_HOST` 改成非回环地址，必须显式配置非空且不同于公开默认值 `ollama` 的 `QWEN38_COMPAT_TOKEN`，否则安装会拒绝启动兼容层；未带匹配密钥的请求会 401。
 
 ## 已知限制
 

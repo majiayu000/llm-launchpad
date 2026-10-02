@@ -3,7 +3,28 @@
 # 用法：./scripts/meter.sh    （另一个窗口跑 ./scripts/claude-code.sh）
 set -euo pipefail
 
-METER_FILE="${QWEN38_METER_FILE:-/tmp/qwen38-ollama-meter.json}"
+METER_FILE="$(python3 - "$HOME/Library/LaunchAgents/com.local.qwen38-ollama-compat.plist" <<'PY'
+import os
+import plistlib
+import sys
+from pathlib import Path
+
+installed = Path(sys.argv[1])
+environment = {}
+if installed.exists():
+    environment = plistlib.loads(installed.read_bytes())["EnvironmentVariables"]
+print(os.environ.get("QWEN38_METER_FILE", environment.get("QWEN38_METER_FILE", "/tmp/qwen38-ollama-meter.json")))
+PY
+)"
+
+if [[ -z "$METER_FILE" ]]; then
+  echo "实时速度计已关闭（QWEN38_METER_FILE 为空）"
+  exit 0
+fi
+
+if [[ "$METER_FILE" != /* ]]; then
+  METER_FILE="$HOME/.local/share/qwen38-ollama/compat/$METER_FILE"
+fi
 
 if [[ ! -f "$METER_FILE" ]]; then
   echo "暂无数据（状态文件 $METER_FILE 还没生成，先在别的窗口跑一次 ./scripts/claude-code.sh）" >&2
