@@ -15,7 +15,7 @@ fi
 PID=$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '/pid =/ {print $3; exit}')
 COMPAT_PID=$(launchctl print "$DOMAIN/$COMPAT_LABEL" 2>/dev/null | awk '/pid =/ {print $3; exit}')
 COMPAT_RUNNING=false
-if curl -fsS "$CLAUDE_API/api/version" >/dev/null 2>&1; then
+if curl -fsS -H "x-api-key: ${QWEN38_COMPAT_TOKEN:-ollama}" "$CLAUDE_API/api/version" >/dev/null 2>&1; then
   COMPAT_RUNNING=true
 fi
 RSS_KIB=0
