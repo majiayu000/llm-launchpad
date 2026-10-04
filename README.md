@@ -2,7 +2,7 @@
 
 在你的 Apple Silicon Mac 上一条命令跑起 Qwen3.8-27B，提供 OpenAI 兼容 API，并可直接作为 Claude Code 或 Codex CLI 的后端模型。默认只监听 `127.0.0.1`，模型推理在本机完成；首次安装需要联网下载运行时和模型。
 
-[硬件要求](#硬件要求) · [安装与预检](#一键安装) · [Claude Code、Codex 和 API 用法](#四种使用方式) · [服务管理](#管理) · [本地入口排障](#本地入口排障先分清模型服务与兼容层) · [已知限制](#已知限制)
+[硬件要求](#硬件要求) · [按内存看文件](#按内存看文件放不放得下) · [安装与预检](#一键安装) · [Claude Code、Codex 和 API 用法](#四种使用方式) · [服务管理](#管理) · [本地入口排障](#本地入口排障先分清模型服务与兼容层) · [已知限制](#已知限制)
 
 ## 硬件要求
 
@@ -14,6 +14,31 @@
 | 软件 | macOS + Homebrew（ollama 未安装时会自动 `brew install`） |
 
 默认使用 MLX 引擎的 4bit 量化版（`qwen3.8:27b-mlx`，约 18GB），加载后约占 20GB 内存。参考速度：M2 Max 96GB 上生成约 16 token/s；改用 GGUF 版（`QWEN38_MODEL=qwen3.8:27b`）约 8 token/s，但新开对话的首次响应更快。
+
+## 按内存看文件放不放得下
+
+安装脚本仍然只下载 `qwen3.8:27b-mlx`。下表只比较公开发布的文件大小和统一内存，核对日期是 2026-10-04。文件大于或等于内存，就不能整文件放进内存。文件小于内存，只说明文件本身更小，不说明加上加载和上下文之后还能跑。博客里的「能跑」和速度没有写进来。
+
+| 统一内存 | 文件小于内存 | 文件大于或等于内存 |
+|---|---|---|
+| 16GB | Qwen3 8B Q4 5.2GB；Qwen2.5-Coder 7B 4.7GB、14B 9.0GB。这些不是本仓库安装的模型 | Qwen3.8-27B Q4 / MLX 18GB。低于 16GB 时安装脚本会拒绝 |
+| 24GB | Qwen3.8-27B Q4 / MLX 18GB；Qwen3-Coder 30B-A3B Q4 19GB | Qwen3.8-27B Q8 30GB、mxfp8 32GB |
+| 32GB | 上面的 Q4，再加上 Qwen3 32B Q4 20GB、Qwen3.8-27B Q8 30GB | mxfp8 正好 32GB，不算小于内存。bf16 是 56GB |
+| 64GB | Qwen3.8-27B 的 Q4 18GB、Q8 30GB、bf16 56GB | Qwen3.8-Flash-Next 这次能读到的最小标签是 105GB |
+| 96GB | Qwen3.8-27B 各档都小于 96GB | Flash-Next 105GB；DeepSeek-V4-Flash 的 Unsloth Q4 155.1GB。GLM-5.3-Flash 1-bit 文件 93.09GB，Unsloth 写的是 100GB，所以不记成放得下 |
+| 128GB | Flash-Next 105GB。GLM 1-bit 文件 93.09GB，Unsloth 写的内存要求是 100GB | DeepSeek Q4 155.1GB；GLM Q4 199.71GB。Unsloth 写 DeepSeek 3-bit 至少 110GB，并说可以放在 128GB 内存的设备上。那是他们的说明，不是本仓库在 Mac 上测过 |
+
+Qwen3.8-Flash（接口名 `qwen3.8-flash`）没有本地量化文件，安装脚本下不到。
+
+体积来源：
+
+- [Ollama qwen3.8 标签](https://ollama.com/library/qwen3.8/tags)：`27b` / `27b-mlx` / `q4_K_M` / `nvfp4` 18GB，`q8_0` 30GB，`mxfp8` 32GB，`bf16` 56GB
+- [Ollama qwen3 标签](https://ollama.com/library/qwen3/tags)：8B Q4 5.2GB，32B Q4 20GB
+- [Ollama qwen3-coder 标签](https://ollama.com/library/qwen3-coder/tags)：30B-A3B Q4 19GB
+- [Ollama qwen2.5-coder 标签](https://ollama.com/library/qwen2.5-coder/tags)：7B 4.7GB，14B 9.0GB
+- [Ollama qwen3.8-flash-next 标签](https://ollama.com/library/qwen3.8-flash-next/tags)：`125b-a6b-nvfp4` 105GB
+- [Unsloth DeepSeek V4](https://unsloth.ai/docs/models/deepseek-v4)：`UD-Q4_K_XL` 155.1GB；3-bit 写的是至少 110GB，并写可放在 128GB 内存的设备上
+- [Unsloth GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash)：`UD-IQ1_S` 93.09GB，1-bit 行 100GB；`UD-Q4_K_XL` 199.71GB
 
 ## 一键安装
 
