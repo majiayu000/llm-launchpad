@@ -50,11 +50,13 @@ cd llm-launchpad
 
 `install.sh` 幂等可重跑：预检硬件 → 准备 ollama → 启动 launchd 常驻服务 → 下载模型（断点续传）→ 发一条真实请求冒烟测试 → 打印使用入口。
 
-先不确定机器能不能跑？用干跑模式只做预检：
+先检查机器是否符合安装门槛？用干跑模式只做预检：
 
 ```bash
 ./install.sh --check
 ```
+
+`--check` 检查系统、架构、统一内存、磁盘和端口，可能查询已运行的服务或已有模型记录；它在依赖准备前退出，不会安装依赖、下载模型或发起生成。预检通过不代表 Ollama、Python 和目标模型已准备好，也不保证所选模型与上下文能在这台机器上运行。
 
 ## 四种使用方式
 
@@ -154,16 +156,18 @@ Ollama 独立实例 127.0.0.1:11439        兼容层 127.0.0.1:11440
 
 从仓库目录运行 `./scripts/status.sh`，按输出定位问题。这个命令读取本地服务状态，不会发起模型生成；如果 `11439` 不可达，会输出 `running:false` 并以非零状态退出。
 
+`running` 来自 `/api/version` 探测，`installed` 和 `loaded` 分别表示所选模型名出现在 `/api/tags` 和 `/api/ps` 列表中；这些字段不校验权重完整性，也不保证实际生成成功或速度。完整安装末尾的冒烟测试会检查 `11439/v1/chat/completions` 的非空回复，只证明所选模型在该入口完成过一次请求，不覆盖 Claude Messages、Codex Responses 或后续持续健康。
+
 | 状态或症状 | 含义与下一步 |
 |---|---|
 | `running:false` | 独立 Ollama 实例不可达。安装完成后先运行 `./scripts/start.sh`，再查 `~/Library/Logs/Qwen3.8-Ollama/`。不要把默认 Ollama 的 `11434` 当作这里的 `11439`。 |
 | `running:true`、`installed:false` | 当前 `QWEN38_MODEL` 未出现在这个实例的模型列表中。运行 `./scripts/pull.sh`；自定义模型时，下载、状态查询和客户端入口都使用同一个 `QWEN38_MODEL`。 |
-| `installed:true`、`loaded:false` | 模型已下载但当前不在加载列表里。这与“未安装”不同；首次实际请求可能需要加载时间。 |
-| Codex / SDK 可用，Claude Code 不可用 | 前者直连 `11439`，后者经过 `11440`。查看兼容层日志，并用下面带鉴权的健康查询核实；`status.sh` 的兼容层探测不带密钥，`claude_compat_running:false` 不能单独证明兼容层未启动。 |
+| `installed:true`、`loaded:false` | 模型名在这个实例的模型列表中，但当前不在加载列表里；首次实际请求可能需要加载时间。 |
+| Codex / SDK 可用，Claude Code 不可用 | 前者直连 `11439`，后者经过 `11440`。`status.sh` 读取已安装 plist 的地址和 token（显式环境变量优先），携带 `x-api-key` 探测兼容层；鉴权失败、不可达、上游失败或超时都可能使 `claude_compat_running:false`，不能单独据此判断进程未启动。查看兼容层日志，并用下面的查询核实。 |
 | Claude Code 或 `/v1/messages` 返回 401 | 请求密钥与兼容层的 `QWEN38_COMPAT_TOKEN` 不一致。客户端与服务端须使用相同配置；兼容层所有代理请求都要鉴权，包括 `/api/version`。 |
 | `claude` 或 `codex` 命令找不到 | 启动脚本调用已有的客户端。先安装对应 CLI，并确认它能被当前终端找到；模型安装成功不代表客户端已安装。 |
 
-核实兼容层是否可达时，带上与服务端一致的密钥（以下使用入口脚本相同的默认值）：
+核实兼容层是否可达时，使用与服务端一致的地址和密钥。以下命令仅示例默认回环地址与 token，不会自动读取已安装 plist；使用自定义配置时请相应替换：
 
 ```bash
 curl -fsS http://127.0.0.1:11440/api/version \
